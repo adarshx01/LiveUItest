@@ -427,9 +427,12 @@ async def validate_action(state: TestExecutionState, config: Any = None) -> dict
 async def human_approval(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
     runtime = _runtime(state)
     pending = state.get("pending_approval") or {}
-    await event_bus.publish(state["execution_id"], "HUMAN_APPROVAL_REQUIRED", pending.get("action", ""),
-                            step_id=pending.get("step_id"),
-                            **{k: v for k, v in pending.items() if k not in ("action", "step_id")})
+    marker = f"approval:{pending.get('key')}"
+    if marker not in runtime.announced:  # LangGraph re-runs this node on resume; announce once
+        runtime.announced.add(marker)
+        await event_bus.publish(state["execution_id"], "HUMAN_APPROVAL_REQUIRED", pending.get("action", ""),
+                                step_id=pending.get("step_id"),
+                                **{k: v for k, v in pending.items() if k not in ("action", "step_id")})
     runtime.budget.pause()
     decision = interrupt({"kind": "approval", **pending})
     runtime.budget.resume()
@@ -557,13 +560,15 @@ async def await_human(state: TestExecutionState, config: Any = None) -> dict[str
     runtime = _runtime(state)
     step = _step(state)
     context = state.get("failure_context") or {}
-    await event_bus.publish(state["execution_id"], "HUMAN_APPROVAL_REQUIRED",
-                            "human verification (CAPTCHA) detected: a person must complete it in the live browser",
-                            step_id=step.id, kind="captcha", evidence=context.get("evidence"))
-    await event_bus.publish(state["execution_id"], "EXECUTION_PAUSED", "awaiting human verification",
-                            step_id=step.id)
+    marker = f"captcha:{step.id}:{runtime.results[step.id].attempts}"
+    shot = None
+    if marker not in runtime.announced:  # LangGraph re-runs this node on resume; announce once
+        runtime.announced.add(marker)
+        await event_bus.publish(state["execution_id"], "HUMAN_APPROVAL_REQUIRED",
+                                "human verification (CAPTCHA) detected: a person must complete it in the live browser",
+                                step_id=step.id, kind="captcha", evidence=context.get("evidence"))
+        shot = await runtime.screenshot(step.id, "challenge")
     runtime.budget.pause()
-    shot = await runtime.screenshot(step.id, "challenge")
     decision = interrupt({"kind": "captcha", "step_id": step.id, "url": runtime.observation.url
                           if runtime.observation else None, "screenshot": shot})
     runtime.budget.resume()
@@ -571,9 +576,17 @@ async def await_human(state: TestExecutionState, config: Any = None) -> dict[str
     resolved = not obs.page_state.captcha_detected and not (isinstance(decision, dict) and decision.get("abort"))
     await event_bus.publish(state["execution_id"], "EXECUTION_RESUMED",
                             "challenge cleared" if resolved else "challenge still present", step_id=step.id)
+    from backend.dsl.results import RecoveryAttempt
+
+    runtime.results[step.id].recovery.append(RecoveryAttempt(
+        attempt=len(runtime.results[step.id].recovery) + 1, failure_category=FailureCategory.CAPTCHA_DETECTED.value,
+        strategy="human_verification_handoff",
+        rationale="CAPTCHA detected; the agent never operates challenges and paused for an authorized human",
+        outcome="recovered" if resolved else "failed",
+        details={"detail": "challenge completed by a human; execution resumed" if resolved else
+                 "challenge still present after resume", "evidence": context.get("evidence")}))
     if resolved:
         runtime.dirty = True
-        runtime.results[step.id].message = "paused for human verification, resumed after it was completed"
         return {"phase": "human_resolved", "failure_context": None}
     return {"phase": "human_unresolved", "blocked_reason": "human verification was not completed"}
 

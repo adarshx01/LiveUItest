@@ -192,6 +192,7 @@ class ExecutionRuntime:
         self.screenshot_policy = opts.screenshots or self.settings.screenshot_policy
         self.video_artifact: str | None = None
         self.closed = False
+        self.announced: set[str] = set()
 
     # ------------------------------------------------------------------ lifecycle
     def bind(self) -> None:
