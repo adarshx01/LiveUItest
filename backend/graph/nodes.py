@@ -6,7 +6,6 @@ checkpointed by LangGraph, so an interrupted execution knows exactly which
 phase completed — in particular whether an action was already executed.
 """
 
-from __future__ import annotations
 
 import functools
 import time
@@ -104,7 +103,7 @@ def _results_dict(runtime: ExecutionRuntime) -> dict[str, dict[str, Any]]:
 
 # =========================================================================== planning
 @node("ingest_test_case")
-async def ingest_test_case(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def ingest_test_case(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     raw = state.get("raw_input") or {}
     await event_bus.publish(state["execution_id"], "EXECUTION_CREATED", raw.get("name") or "test execution",
                             test_case_id=state.get("test_case_id"))
@@ -141,7 +140,7 @@ def _case_from_dict(data: dict[str, Any]) -> RawTestCase:
 
 
 @node("normalize_test_case")
-async def normalize_test_case(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def normalize_test_case(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     if state.get("test_spec"):
         return {"phase": "normalized"}
     services = get_graph_services()
@@ -153,7 +152,7 @@ async def normalize_test_case(state: TestExecutionState, config: Any = None) -> 
 
 
 @node("analyze_requirements")
-async def analyze_requirements(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def analyze_requirements(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     spec = TestSpec.model_validate(state["test_spec"])
     flat = spec.flat_steps()
     summary = {
@@ -171,7 +170,7 @@ async def analyze_requirements(state: TestExecutionState, config: Any = None) ->
 
 
 @node("compile_test_plan")
-async def compile_test_plan(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def compile_test_plan(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     services = get_graph_services()
     spec = TestSpec.model_validate(state["test_spec"])
     if not spec.analyzer.get("compiled"):
@@ -183,7 +182,7 @@ async def compile_test_plan(state: TestExecutionState, config: Any = None) -> di
 
 
 @node("validate_test_plan")
-async def validate_test_plan(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def validate_test_plan(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     services = get_graph_services()
     spec = TestSpec.model_validate(state["test_spec"])
     variables = set((state.get("raw_input") or {}).get("variables") or {}) | set(spec.variables)
@@ -201,7 +200,7 @@ async def validate_test_plan(state: TestExecutionState, config: Any = None) -> d
 
 
 @node("check_permissions")
-async def check_permissions(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def check_permissions(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     from backend.agents.governance.policy_engine import EnvironmentPolicy, host_allowed
     from backend.core.config import get_settings
 
@@ -224,7 +223,7 @@ async def check_permissions(state: TestExecutionState, config: Any = None) -> di
 
 # =========================================================================== browser setup
 @node("initialize_browser_session")
-async def initialize_browser_session(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def initialize_browser_session(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     services = get_graph_services()
     runtime = runtime_registry.get(state["execution_id"])
     if runtime is None:
@@ -259,7 +258,7 @@ async def _persist_event_router(record: dict[str, Any]) -> None:
 
 
 @node("observe_initial_page")
-async def observe_initial_page(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def observe_initial_page(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     spec = runtime.request.spec
     first = spec.flat_steps()[0] if spec.flat_steps() else None
@@ -271,7 +270,7 @@ async def observe_initial_page(state: TestExecutionState, config: Any = None) ->
 
 
 @node("retrieve_application_memory")
-async def retrieve_application_memory(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def retrieve_application_memory(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     if runtime.memory is None:
         return {"phase": "memory_loaded", "application_memory": {"enabled": False}}
@@ -286,7 +285,7 @@ async def retrieve_application_memory(state: TestExecutionState, config: Any = N
 
 
 @node("select_execution_strategy")
-async def select_execution_strategy(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def select_execution_strategy(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     from backend.runners.runner_registry import select_runner
 
     runtime = _runtime(state)
@@ -300,7 +299,7 @@ async def select_execution_strategy(state: TestExecutionState, config: Any = Non
 
 # =========================================================================== step loop
 @node("prepare_next_action")
-async def prepare_next_action(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def prepare_next_action(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     queue = list(state.get("queue") or [])
     while queue:
@@ -353,14 +352,14 @@ async def _evaluate_condition(runtime: ExecutionRuntime, step: Step) -> tuple[bo
 
 
 @node("retrieve_step_memory")
-async def retrieve_step_memory(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def retrieve_step_memory(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     candidates = await runtime.retrieve_memory(_step(state))
     return {"phase": "step_memory", "retrieved_memory": [c.to_dict() for c in candidates]}
 
 
 @node("observe_current_page")
-async def observe_current_page(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def observe_current_page(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     step = _step(state)
     if step.action == ActionType.NAVIGATE and runtime.observation is None:
@@ -379,7 +378,7 @@ async def observe_current_page(state: TestExecutionState, config: Any = None) ->
 
 
 @node("resolve_target_element")
-async def resolve_target_element(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def resolve_target_element(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     await runtime.ground(_step(state))
     decision = runtime.compact_decision()
@@ -388,7 +387,7 @@ async def resolve_target_element(state: TestExecutionState, config: Any = None) 
 
 
 @node("ground_target")
-async def ground_target(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def ground_target(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     work = runtime.ensure_work(_step(state))
     decision = work.decision
@@ -400,7 +399,7 @@ async def ground_target(state: TestExecutionState, config: Any = None) -> dict[s
 
 
 @node("validate_action")
-async def validate_action(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def validate_action(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     step = _step(state)
     decisions = state.get("approval_decisions") or {}
@@ -424,7 +423,7 @@ async def validate_action(state: TestExecutionState, config: Any = None) -> dict
 
 
 @node("human_approval")
-async def human_approval(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def human_approval(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     pending = state.get("pending_approval") or {}
     marker = f"approval:{pending.get('key')}"
@@ -446,7 +445,7 @@ async def human_approval(state: TestExecutionState, config: Any = None) -> dict[
 
 
 @node("execute_action")
-async def execute_action(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def execute_action(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     outcome = await runtime.execute(_step(state))
     return {"phase": "executed", "executed_action": {"ok": outcome.ok, "tool": outcome.tool, "error": outcome.error,
@@ -454,14 +453,14 @@ async def execute_action(state: TestExecutionState, config: Any = None) -> dict[
 
 
 @node("wait_for_state_change")
-async def wait_for_state_change(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def wait_for_state_change(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     await runtime.settle(_step(state))
     return {"phase": "settled"}
 
 
 @node("verify_action_result")
-async def verify_action_result(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def verify_action_result(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     step = _step(state)
     verification = await runtime.verify(step)
@@ -481,7 +480,7 @@ async def verify_action_result(state: TestExecutionState, config: Any = None) ->
 
 
 @node("learn_pattern")
-async def learn_pattern(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def learn_pattern(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     step = _step(state)
     runtime.learn(step)
@@ -505,7 +504,7 @@ async def learn_pattern(state: TestExecutionState, config: Any = None) -> dict[s
 
 
 @node("classify_failure")
-async def classify_failure_node(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def classify_failure_node(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     step = _step(state)
     analysis = runtime.classify(step)
@@ -519,7 +518,7 @@ async def classify_failure_node(state: TestExecutionState, config: Any = None) -
 
 
 @node("recovery_planner")
-async def recovery_planner(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def recovery_planner(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     step = _step(state)
     analysis = runtime.ensure_work(step).analysis
@@ -528,7 +527,7 @@ async def recovery_planner(state: TestExecutionState, config: Any = None) -> dic
 
 
 @node("recovery_policy_check")
-async def recovery_policy_check(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def recovery_policy_check(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     step = _step(state)
     plan = state.get("recovery_plan") or {}
@@ -544,7 +543,7 @@ async def recovery_policy_check(state: TestExecutionState, config: Any = None) -
 
 
 @node("recovery_executor")
-async def recovery_executor(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def recovery_executor(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     step = _step(state)
     ok, detail = await runtime.execute_recovery(step, state.get("recovery_plan") or {})
@@ -556,7 +555,7 @@ async def recovery_executor(state: TestExecutionState, config: Any = None) -> di
 
 
 @node("await_human")
-async def await_human(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def await_human(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     step = _step(state)
     context = state.get("failure_context") or {}
@@ -592,7 +591,7 @@ async def await_human(state: TestExecutionState, config: Any = None) -> dict[str
 
 
 @node("fail_step")
-async def fail_step(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def fail_step(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     step = _step(state)
     context = state.get("failure_context") or {}
@@ -638,7 +637,7 @@ async def fail_step(state: TestExecutionState, config: Any = None) -> dict[str, 
 
 
 @node("next_test_action")
-async def next_test_action(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def next_test_action(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = _runtime(state)
     runtime.budget.check_alive()
     return {"phase": "next", "execution_budget": {**(state.get("execution_budget") or {}),
@@ -647,7 +646,7 @@ async def next_test_action(state: TestExecutionState, config: Any = None) -> dic
 
 # =========================================================================== finalization
 @node("final_assertions")
-async def final_assertions(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def final_assertions(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = runtime_registry.get(state["execution_id"])
     if runtime is None or runtime.session is None:
         return {"phase": "final_checked"}
@@ -662,7 +661,7 @@ async def final_assertions(state: TestExecutionState, config: Any = None) -> dic
 
 
 @node("evaluate_test_result")
-async def evaluate_test_result(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def evaluate_test_result(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = runtime_registry.get(state["execution_id"])
     spec = TestSpec.model_validate(state["test_spec"]) if state.get("test_spec") else None
     if runtime is not None:
@@ -694,7 +693,7 @@ async def evaluate_test_result(state: TestExecutionState, config: Any = None) ->
 
 
 @node("persist_test_memory")
-async def persist_test_memory(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def persist_test_memory(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     runtime = runtime_registry.get(state["execution_id"])
     if runtime is None or runtime.memory is None:
         return {"phase": "memory_persisted", "learning_stats": {"enabled": False}}
@@ -716,7 +715,7 @@ async def persist_test_memory(state: TestExecutionState, config: Any = None) -> 
 
 
 @node("generate_report")
-async def generate_report(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
+async def generate_report(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     from backend.agents.reporting.report_generator import ReportGenerator
 
     runtime = runtime_registry.get(state["execution_id"])

@@ -1,0 +1,11 @@
+{
+  "browser": { "browserName": "chromium", "isolated": true,
+               "launchOptions": { "headless": true, "chromiumSandbox": false },
+               "contextOptions": { "viewport": { "width": 1280, "height": 800 }, "acceptDownloads": true } },
+  "capabilities": ["core", "core-navigation", "core-tabs", "core-input", "network", "devtools", "vision"],
+  "snapshot": { "mode": "none", "boxes": true },
+  "timeouts": { "action": 8000, "navigation": 30000, "settle": 500 },
+  "webmcp": false,
+  "imageResponses": "allow",
+  "redactUrlParams": ["access_token", "id_token", "refresh_token", "code", "token", "session"]
+}

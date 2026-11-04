@@ -20,6 +20,7 @@ class StepStatus(StrEnum):
 
 
 class TestOutcome(StrEnum):
+    __test__ = False  # not a pytest test class
     PASSED = "PASSED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"

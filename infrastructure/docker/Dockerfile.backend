@@ -1,0 +1,19 @@
+# API / worker image. Browsers are not needed here when AITEST_MCP_TRANSPORT=http;
+# for stdio transport the image also installs Node, the pinned Playwright MCP and Chromium.
+FROM python:3.13-slim AS base
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+ && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY backend ./backend
+COPY demo ./demo
+RUN pip install --no-cache-dir ".[s3]"
+COPY browser/playwright-mcp/package.json browser/playwright-mcp/package-lock.json* ./browser/playwright-mcp/
+RUN cd browser/playwright-mcp && npm ci --omit=dev \
+ && npx --prefix /app/browser/playwright-mcp playwright install --with-deps chromium ffmpeg
+COPY examples ./examples
+ENV AITEST_BROWSER_EXECUTABLE_PATH=""
+EXPOSE 8000
+CMD ["uvicorn", "backend.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

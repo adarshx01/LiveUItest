@@ -374,7 +374,9 @@ async def api_items(offset: int = 0, limit: int = 20) -> JSONResponse:
 def main() -> None:
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8800, log_level="warning")
+    import os
+
+    uvicorn.run(app, host=os.environ.get("DEMO_HOST", "127.0.0.1"), port=8800, log_level="warning")
 
 
 if __name__ == "__main__":

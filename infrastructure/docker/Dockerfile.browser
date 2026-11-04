@@ -1,0 +1,10 @@
+# Independently deployable browser worker: the pinned Playwright MCP server over HTTP.
+# Each MCP client connection gets its own isolated browser context (no --shared-browser-context).
+FROM mcr.microsoft.com/playwright:v1.56.0-noble
+WORKDIR /srv
+COPY browser/playwright-mcp/package.json browser/playwright-mcp/package-lock.json* ./
+RUN npm ci --omit=dev && npx playwright install chromium ffmpeg
+COPY browser/configuration/mcp-http.json ./mcp-http.json
+EXPOSE 8931
+HEALTHCHECK --interval=15s --timeout=3s CMD node -e "require('http').get('http://127.0.0.1:8931/mcp',r=>process.exit(0)).on('error',()=>process.exit(1))"
+CMD ["npx", "@playwright/mcp", "--config", "/srv/mcp-http.json", "--port", "8931", "--host", "0.0.0.0", "--allowed-hosts", "*"]
