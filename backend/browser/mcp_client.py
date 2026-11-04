@@ -109,7 +109,14 @@ class MCPConnection:
         args = [str(script), "--config", str(config_path)]
         if self.options.device:
             args += ["--device", self.options.device]
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("AITEST_SECRET_", "ANTHROPIC_", "OPENAI_"))}
+        # the browser process never needs platform credentials
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("AITEST_SECRET_", "ANTHROPIC_", "OPENAI_",
+                                                                       "AWS_", "GH_", "GITHUB_"))}
+        browsers = self.settings.playwright_browsers_path
+        if browsers is None and (Path(__file__).resolve().parents[2] / "data" / "pw-browsers").exists():
+            browsers = Path(__file__).resolve().parents[2] / "data" / "pw-browsers"
+        if browsers is not None:
+            env["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers)
         return StdioServerParameters(command=self.settings.mcp_node_command, args=args, cwd=str(self.workspace),
                                      env=env)
 

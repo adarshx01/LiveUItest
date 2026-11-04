@@ -102,7 +102,9 @@ class BrowserSession:
                     return self.video_file
                 last_size = size
             await asyncio.sleep(0.3)
-        return self.video_file if self.video_file.exists() else None
+        if self.video_file.exists() and self.video_file.stat().st_size > 0:
+            return self.video_file
+        return None  # recording unavailable (e.g. ffmpeg revision mismatch); the report builds a replay instead
 
     async def close(self) -> None:
         if self.recording:

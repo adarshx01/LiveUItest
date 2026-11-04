@@ -1216,7 +1216,9 @@ def parse_assertion(cond: str, ctx: ParseContext) -> tuple[AssertionSpec | None,
         expected = strip_quotes(m.group("v"))
         subj = m.group("subj")
         target = None
-        if not re.match(r"^(?:page|screen|site|application|app|browser|window)$", subj.strip(), re.IGNORECASE):
+        subject_norm = normalize_text(re.sub(r"\s+(page|screen|view)$", "", subj.strip(), flags=re.IGNORECASE))
+        if not re.match(r"^(?:page|screen|site|application|app|browser|window)$", subj.strip(), re.IGNORECASE) \
+                and subject_norm not in PAGE_NOUNS:
             target = build_target(subj, "hover")
         return a(AssertionType.TEXT_VISIBLE, 0.82, expected=expected, target=target, match="case_insensitive")
     if quoted:

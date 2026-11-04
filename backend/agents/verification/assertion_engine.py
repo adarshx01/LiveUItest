@@ -206,7 +206,8 @@ class AssertionEngine:
         scope_display = None
         if spec.target is not None:
             el, conf = self._find(spec.target, obs, None, "hover")
-            if el is not None and conf >= 0.55:
+            # a heading names a section, it does not contain it: headings scope to the page
+            if el is not None and conf >= 0.55 and el.role != "heading":
                 scope_text = " ".join(filter(None, [el.name, el.text, el.value_preview]))
                 scope_display = el.display()
         if scope_text is None:

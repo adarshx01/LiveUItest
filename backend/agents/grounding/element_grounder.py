@@ -260,7 +260,8 @@ class ElementGrounder:
         memory_res: list[tuple[StrategyResolution, float, str | None]] = []
         for strategy, conf, memory_id in ctx.memory_strategies:
             res = resolve_strategy(strategy, observation)
-            if res.element is not None:
+            # only a strong, unambiguous re-grounding may influence the decision
+            if res.element is not None and res.quality >= 0.7 and not res.ambiguous:
                 memory_res.append((res, conf, memory_id))
 
         scored: list[ScoredCandidate] = []
@@ -333,7 +334,7 @@ class ElementGrounder:
                     0.6 if el.input_type in (None, "text") and target.input_type == "email" else 0.2)
             candidate = ScoredCandidate(el, 0.0, features, evidence)
             for res, conf, memory_id in memory_res:
-                if res.element is el and not res.ambiguous:
+                if res.element is el and not res.ambiguous and identity >= 0.5:
                     candidate.memory_quality = res.quality * conf
                     candidate.memory_id = memory_id
                     candidate.evidence.append(f"memory strategy re-grounded ({res.quality:.2f}, on "

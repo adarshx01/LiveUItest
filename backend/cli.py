@@ -32,8 +32,9 @@ async def run_test(args: argparse.Namespace) -> int:
         for name, value in _pairs(args.secret).items():
             await platform.secrets.store(SecretScope(org, project.id), name, value)
         variables = _pairs(args.var)
+        # run-level data (--var) is execution input, not part of the versioned test definition
         tc, version = await platform.platform.save_test_case(org, project.id, content=content, base_url=args.url,
-                                                             name=args.name, variables=variables)
+                                                             name=args.name)
         options: dict[str, Any] = {"use_memory": not args.no_memory, "auto_approve": args.auto_approve,
                                    "headless": not args.headed}
         if args.runner:

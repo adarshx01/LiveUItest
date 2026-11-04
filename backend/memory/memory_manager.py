@@ -61,11 +61,13 @@ class MemoryCandidate:
     successes: int
     failures: int
     version: int
+    validated_runs: int = 0
     similarity: float = 1.0
 
     def to_dict(self) -> dict[str, Any]:
         return {"memory_id": self.memory_id, "match_level": self.match_level, "confidence": round(self.confidence, 3),
                 "successes": self.successes, "failures": self.failures, "version": self.version,
+                "validated_runs": self.validated_runs,
                 "strategy": self.strategy.describe(), "similarity": round(self.similarity, 3)}
 
 
@@ -179,7 +181,7 @@ class MemoryManager:
         return MemoryCandidate(memory_id=row.id, strategy=LocatorStrategy.model_validate(row.target_strategy),
                                confidence=row.confidence, match_level=level,
                                successes=row.successful_execution_count, failures=row.failed_execution_count,
-                               version=row.memory_version)
+                               version=row.memory_version, validated_runs=row.validated_run_count)
 
     async def trajectory(self, test_case_id: str, version: int) -> dict[str, Any] | None:
         async with self.sessionmaker() as session:

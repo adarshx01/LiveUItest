@@ -322,8 +322,10 @@ class ExecutionRuntime:
             log.warning("memory retrieval failed", error=str(exc)[:200])
             candidates = []
         min_conf = self.settings.memory_min_confidence_for_replay
+        # validated knowledge only: a strategy needs a fully passed run or repeated verified successes
         work.memory = [c for c in candidates if c.confidence >= min_conf * (0.8 if c.match_level == "semantic" else 0.6)
-                       and c.successes >= self.settings.memory_min_successes_for_replay]
+                       and c.successes >= self.settings.memory_min_successes_for_replay
+                       and (c.validated_runs >= 1 or c.successes >= 2)]
         if work.memory:
             await self.emit("MEMORY_RETRIEVED", f"{len(work.memory)} remembered strategies", step_id=step.id,
                             memories=[c.to_dict() for c in work.memory])
@@ -362,6 +364,8 @@ class ExecutionRuntime:
             self.memory_hits += 1
             await self.emit("MEMORY_USED", f"re-grounded remembered strategy for {decision.display}",
                             step_id=step.id, memory_id=decision.memory_id)
+        elif work.memory and not work.drop_memory and decision.element_id is not None:
+            await self._memory_miss(step, work, decision)
         if work.element is not None:
             strategy = LocatorStrategy.from_element(work.element, obs)
             decision.locator_strategy = {**strategy.model_dump(exclude_none=True),
@@ -373,6 +377,36 @@ class ExecutionRuntime:
                         target=decision.display, evidence=decision.evidence[:5],
                         candidates=[{"display": c.display, "score": c.score} for c in decision.candidates[:4]])
         return decision
+
+    async def _memory_miss(self, step: Step, work: StepWork, decision: GroundingDecision) -> None:
+        """Validated memory exists but no longer matches the live page: the UI changed.
+
+        The step is re-grounded semantically (already done by the grounder); this records
+        the detection as a recovery, penalizes the stale strategy and marks the new
+        strategy to supersede it once verified.
+        """
+
+        stale = work.memory[0]
+        work.healed = True
+        work.drop_memory = True
+        work.failed_strategies.append(stale.strategy.model_dump(exclude_none=True))
+        attempt = RecoveryAttempt(
+            attempt=len(self.results[step.id].recovery) + 1,
+            failure_category=FailureCategory.PAGE_STRUCTURE_CHANGED.value, strategy="reground_without_memory",
+            rationale=f"remembered strategy ({stale.strategy.describe()}) no longer matches the live page; "
+                      f"re-grounded semantically", outcome="recovered" if decision.decision != "ask_human" else "failed",
+            details={"detail": f"new target: {decision.display} (confidence {decision.confidence:.2f})",
+                     "stale_memory_id": stale.memory_id})
+        self.results[step.id].recovery.append(attempt)
+        self.recoveries += 1
+        if self.recorder is not None:
+            await self.recorder.recovery(step.id, attempt)
+        if self.memory is not None:
+            await self.memory.record_strategy_failure(stale.memory_id, execution_id=self.execution_id,
+                                                      reason="did not re-ground on the current page")
+        decision.evidence.append(f"UI change detected: remembered {stale.strategy.describe()} not found")
+        await self.emit("RECOVERY_COMPLETED", f"UI change detected; re-grounded to {decision.display}",
+                        step_id=step.id, strategy="reground_without_memory", stale_memory=stale.memory_id)
 
     async def _refine(self, step: Step, obs: Observation, ctx: GroundingContext,
                       decision: GroundingDecision) -> GroundingDecision:

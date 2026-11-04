@@ -85,6 +85,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
   {% for k, v, c in cards %}<div class="card metric"><div class="v" style="color:{{ c }}">{{ v }}</div><div class="k">{{ k }}</div></div>{% endfor %}
 </div>
 {% if r.video %}<h2>Execution video</h2><video controls src="{{ r.video }}"></video><div class="note">Recorded by Playwright MCP for the whole isolated browser session.</div>{% endif %}
+{% if r.replay %}<h2>Execution replay</h2><img src="{{ r.replay }}" alt="execution replay" style="max-width:100%;border-radius:8px;border:1px solid var(--line)"><div class="note">Animated replay of every action (before / after screenshots).</div>{% endif %}
 <h2>Step-by-step execution</h2>
 {% for s in steps %}
 <details class="step" style="border-left-color:{{ colors[s.status] }}" {% if s.status in ('FAILED','BLOCKED','INCONCLUSIVE') %}open{% endif %}>
@@ -205,6 +206,11 @@ class ReportGenerator:
         report = redact_value(report)
         json_ref = await self.artifacts.put_bytes(execution_id, "report", "report.json",
                                                   json.dumps(report, indent=2, default=str).encode(), "application/json")
+        replay_ref = await self._replay(execution_id, steps)
+        if replay_ref is not None:
+            report["replay"] = replay_ref.uri
+            if runtime is not None and runtime.recorder is not None:
+                await runtime.recorder.artifact(replay_ref, None)
         html = await self._html(report, steps, runtime, events, metrics)
         html_ref = await self.artifacts.put_bytes(execution_id, "report", "report.html", html.encode("utf-8"),
                                                   "text/html")
@@ -215,6 +221,34 @@ class ReportGenerator:
                 "json_api_path": json_ref.api_path, "outcome": report["outcome"],
                 "video_uri": runtime.video_artifact if runtime else None,
                 "local_path": str(self.artifacts.local_path(html_ref.uri) or "")}
+
+    async def _replay(self, execution_id: str, steps: list[StepResult]) -> Any:
+        """Animated execution replay from the per-action screenshots (always available)."""
+
+        frames: list[Image.Image] = []
+        durations: list[int] = []
+        for step in steps:
+            for action in step.actions:
+                for uri, hold in ((action.screenshot_before, 1100), (action.screenshot_after, 1300)):
+                    if not uri:
+                        continue
+                    try:
+                        image = Image.open(io.BytesIO(await self.artifacts.get_bytes(uri))).convert("RGB")
+                    except Exception:  # pragma: no cover
+                        continue
+                    if image.width > 960:
+                        image = image.resize((960, int(image.height * 960 / image.width)))
+                    frames.append(_caption(image, f"{step.index}. {step.original_text[:90]} — {step.status.value}"))
+                    durations.append(hold)
+        if len(frames) < 2:
+            return None
+        size = frames[0].size
+        frames = [f if f.size == size else f.resize(size) for f in frames][:240]
+        out = io.BytesIO()
+        frames[0].save(out, format="WEBP", save_all=True, append_images=frames[1:], duration=durations[:len(frames)],
+                       loop=0, quality=70, method=4)
+        return await self.artifacts.put_bytes(execution_id, "replay", "execution-replay.webp", out.getvalue(),
+                                              "image/webp")
 
     @staticmethod
     def _browser(runtime: Any) -> str:
@@ -313,6 +347,8 @@ class ReportGenerator:
             ("Tool calls", metrics.tool_calls, "#1b2130"),
         ]
         artifacts = [{"kind": "report", "name": "report.json", "href": "report.json"}]
+        if report.get("replay"):
+            artifacts.append({"kind": "replay", "name": "execution-replay.webp", "href": "../replay/execution-replay.webp"})
         if runtime is not None and runtime.video_artifact:
             artifacts.append({"kind": "video", "name": "execution-video.webm", "href": "../video/execution-video.webm"})
         for dl in (runtime.downloads if runtime else []):
@@ -324,11 +360,21 @@ class ReportGenerator:
         r = dict(report)
         r["metrics"] = metrics
         r["video"] = "../video/execution-video.webm" if runtime is not None and runtime.video_artifact else None
+        r["replay"] = "../replay/execution-replay.webp" if report.get("replay") else None
         r["artifacts"] = artifacts
         r["timeline"] = timeline
         r["metrics"].recovered_steps = metrics.recovered_steps  # type: ignore[attr-defined]
         template = self.env.from_string(TEMPLATE)
         return template.render(r=_Obj(r), steps=view_steps, colors=colors, cards=cards)
+
+
+def _caption(image: Image.Image, text: str) -> Image.Image:
+    from PIL import ImageDraw, ImageFont
+
+    canvas = Image.new("RGB", (image.width, image.height + 28), (20, 26, 43))
+    canvas.paste(image, (0, 28))
+    ImageDraw.Draw(canvas).text((10, 8), text, fill=(255, 255, 255), font=ImageFont.load_default())
+    return canvas
 
 
 class _Obj(dict):

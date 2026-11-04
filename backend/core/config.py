@@ -92,6 +92,8 @@ class Settings(BaseSettings):
     browser_record_video: bool = True
     browser_record_trace: bool = False
     browser_output_root: Path = REPO_ROOT / "data" / "browser"
+    # Optional PLAYWRIGHT_BROWSERS_PATH for the MCP subprocess (see infrastructure/scripts/link_browsers.sh)
+    playwright_browsers_path: Path | None = None
     browser_pool_size: int = 4
     browser_session_idle_ttl_seconds: float = 1800.0
     test_id_attribute: str = "data-testid"
