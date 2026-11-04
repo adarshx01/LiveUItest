@@ -1,0 +1,9 @@
+{
+  "name": "ai-testing-playwright-mcp",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned Playwright MCP server used by the AI testing platform browser workers",
+  "dependencies": {
+    "@playwright/mcp": "0.0.84"
+  }
+}

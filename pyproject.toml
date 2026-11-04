@@ -1,0 +1,57 @@
+[project]
+name = "ai-testing-platform"
+version = "1.0.0"
+description = "AI-powered agentic end-to-end browser testing platform (LangGraph + Playwright MCP)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+dependencies = [
+  "fastapi==0.162.0",
+  "uvicorn[standard]==0.54.0",
+  "pydantic==2.14.2",
+  "pydantic-settings==2.16.2",
+  "sqlalchemy[asyncio]==2.1.7",
+  "asyncpg==0.32.0",
+  "psycopg[binary]==3.3.7",
+  "psycopg-pool==3.3.3",
+  "langgraph==1.2.19",
+  "langgraph-checkpoint-postgres==3.2.0",
+  "pgvector==0.5.1",
+  "redis==8.1.0",
+  "mcp==2.3.0",
+  "httpx==0.28.1",
+  "anthropic==2.4.0",
+  "jinja2==3.1.6",
+  "cryptography==50.0.2",
+  "opentelemetry-sdk==1.45.2",
+  "pillow==13.0.0",
+  "numpy>=2.0",
+  "python-multipart>=0.0.20",
+  "websockets==17.4",
+]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.35"]
+dev = ["pytest==9.2.0", "pytest-asyncio==1.4.1.post1"]
+
+[project.scripts]
+aitest = "backend.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["backend*", "demo*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+markers = [
+  "browser: requires Playwright MCP + Chromium",
+  "db: requires PostgreSQL with pgvector",
+  "e2e: end-to-end platform demonstrations",
+]
+filterwarnings = ["ignore::DeprecationWarning"]

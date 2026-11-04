@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Node
+node_modules/
+frontend/.next/
+frontend/out/
+browser/playwright-mcp/node_modules/
+
+# Runtime data
+data/
+!data/.gitkeep
+*.log
+.env
+reports/local/
+
+# OS
+.DS_Store
