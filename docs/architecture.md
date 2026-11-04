@@ -79,3 +79,66 @@ reinforce locator memory, but they never count as validated full runs or record 
 `compare` lines two executions up step by step (by id, else by text, else by position) and reports
 regressions, fixes, changed targets, recovery and memory changes, slowdowns and metric deltas. It
 backs the UI's "compare with previous" view.
+
+## Understanding imperfect tests and imperfect pages
+
+**Typos and other words.** Two layers, with a strict line between *finding* and *judging*:
+
+* `planner/spelling.py` repairs the grammar of an instruction before parsing: the verb ("Clik", "Selct",
+  "Verfy"), control nouns ("buton", "dropdwon"), predicates ("dispalyed") and field/page words
+  ("usrname", "dashbaord"). Data is never rewritten: quoted text, variables, URLs, e-mail addresses,
+  values ("as abc"), options ("Select **Indai** from") and expected texts stay byte-identical. Each
+  repair is recorded on the step (`spelling: Clik->click`), and the report shows the author's words.
+* `grounding/fuzzy.py::match_score` is the forgiving matcher used to find elements, options and
+  remembered strategies. It repairs typos with a keyboard-aware Damerau-Levenshtein cost (a
+  transposition, a neighbouring key or a dropped letter is cheap; an arbitrary substitution is not),
+  maps synonym/abbreviation groups ("sign in" = "log in", "pwd" = "password", "qty" = "quantity"),
+  joins split words ("user name" = "username"), keeps numbers exact, and never treats two real words
+  as typos of each other ("Edit" ≠ "Exit", "Save" ≠ "Same", "Sign In" ≠ "Sign Up").
+* Assertions keep the strict `text_match.similarity`. A typo in an expected value, or in the product,
+  fails the check instead of turning into a silent pass.
+
+**Dropdowns and browser-rendered controls** (`execution/dropdown.py`, `forms/option_matcher.py`,
+`forms/value_normalizer.py`):
+
+* Native `<select>`: the popup is drawn by the OS, so it is never clicked. Options are read live
+  (labels, values, optgroups, disabled flags) and chosen with `select_option`. The engine waits while a
+  dependent select is disabled or still loading. Multi-selects take several options. "Click the
+  Country dropdown" is a verified no-op, and "Click India" becomes `select_option` on its owner select.
+* `<datalist>`: suggestions are browser-rendered, so the matched value is typed.
+* Pickers (date, time, datetime-local, month, week, color, range, number) accept one machine format.
+  Values such as "12/24/2026", "2:30 PM", "red" or "50%" are normalized, filled without keystrokes,
+  and verified against the normalized value.
+* Custom dropdowns:
+  - The trigger is opened, by typing into it when it is an editable combobox.
+  - The options found are the ones that belong to *this* trigger: its `aria-controls` listbox,
+    otherwise the nearest visible popup (portals included), otherwise ARIA-less "div soup" lists.
+  - When the option is not rendered, the engine filters through the popup's own search box, then
+    scrolls virtualized lists.
+  - Multi-selects never click an already selected entry. Menu paths ("Export > CSV") walk submenus.
+* Option choice order: exact, case, normalized, value code, alias ("USA"), unique containment,
+  ordinal ("the second option"), then a unique typo-tolerant best match. A disabled option is
+  reported, and nothing is ever a "closest guess".
+
+**Messy markup** (`browser/js_probes.py`, `observation/element_inventory.py`):
+
+* The DOM probe walks open shadow roots. Web-component internals get piercing CSS selectors, and
+  page text includes shadow content.
+* Unassociated labels are inferred the way a person reads them: preceding text, the table cell to
+  the left or the column header, a wrapper's own text, `dt`/`dd`.
+* Role-less `div`/`span` controls with click handlers or pointer cursors become candidates.
+  Button-like ones rank as buttons, and dropdown-like ones as dropdown triggers ("Select department"
+  names the Department field).
+* Form flow resolves look-alikes: after filling a field, a same-purpose field in the same group (form,
+  table form, dialog, component) is preferred over one elsewhere ("email" in the shipping table, not
+  the newsletter box).
+
+**Memory fast path** (`runtime._memory_fastpath`): for the same application page and step, a
+validated strategy (from a fully passed run, or repeated verified successes) is replayed without
+candidate scoring or a model call. It is used only when it re-grounds on the live page uniquely and
+almost perfectly (≥ 0.85), the element is usable for the action, and it still means what the step asks.
+Otherwise full grounding takes over: scoring, refinement and, when configured, the model. A UI change
+is recorded as such. A remembered element that fails verification is penalised, superseded once a new
+strategy is verified, and dropped for the step. Memory can confirm a live match but never overrule a
+clearly better one. Memory keys include the words that distinguish steps with the same purpose
+("email" vs "newsletter email").

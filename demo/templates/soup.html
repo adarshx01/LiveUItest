@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Checkout (legacy){% endblock %}
+{% block content %}
+<style>
+  .x9f2k, .x7aa1, .q1 { border: 1px solid #c9cfdc; border-radius: 4px; padding: 6px 8px; }
+  ._b3x9 { display: inline-block; background: #1f8a4c; color: #fff; padding: 9px 18px; border-radius: 6px; cursor: pointer; }
+  .lnk-7 { display: inline-block; color: #b33; cursor: pointer; margin-left: 14px; }
+  .mobile-only { display: none; }
+  table.t1 td { padding: 4px 8px 4px 0; }
+</style>
+<div class="card" style="max-width:640px">
+  <div style="font-size:22px;font-weight:700;margin-bottom:10px">Shipping details</div>
+  <!-- legacy markup: no <form>, no <label>, no ids, generated class names -->
+  <table class="t1">
+    <tr><td>Full name</td><td><input class="x9f2k" data-gt="soup-name"></td></tr>
+    <tr><td>E-mail</td><td><input class="x7aa1" type="email" data-gt="soup-email"></td></tr>
+    <tr><td>Mobile no.</td><td><input class="q1" data-gt="soup-phone"></td></tr>
+  </table>
+  <div class="r9">Postal code: <input class="q1" maxlength="10" data-gt="soup-zip"></div>
+  <div style="margin-top:14px">
+    <div class="_b3x9" onclick="placeOrder()" data-gt="soup-submit"><span>Place</span> <span>order</span></div>
+    <div class="lnk-7" onclick="cancelOrder()" data-gt="soup-cancel">Cancel order</div>
+  </div>
+  <div class="mobile-only"><div class="_b3x9" onclick="placeOrder()" data-gt="soup-submit-mobile">Place order</div></div>
+  <div id="soup-result" style="margin-top:12px;font-weight:600"></div>
+</div>
+<div class="card" style="max-width:640px">
+  <acme-newsletter data-gt="soup-newsletter"></acme-newsletter>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const cells = () => Array.from(document.querySelectorAll('table.t1 input'));
+  function placeOrder() {
+    const [name, email, phone] = cells().map(i => i.value.trim());
+    const zip = document.querySelector('.r9 input').value.trim();
+    const out = document.getElementById('soup-result');
+    out.textContent = name && email && phone && zip ? `Order placed for ${name}` : 'Please complete all shipping details';
+  }
+  function cancelOrder() { document.getElementById('soup-result').textContent = 'Order cancelled'; }
+  // a web component: its controls live in an open shadow root, invisible to document.querySelector
+  class AcmeNewsletter extends HTMLElement {
+    connectedCallback() {
+      const root = this.attachShadow({mode: 'open'});
+      root.innerHTML = `<style>input{border:1px solid #c9cfdc;border-radius:4px;padding:6px 8px} button{margin-left:6px}</style>
+        <div style="font-weight:600;margin-bottom:6px">Stay in the loop</div>
+        <label>Newsletter email <input type="email" data-gt="soup-nl-email"></label>
+        <button type="button" data-gt="soup-nl-add">Add me</button>
+        <p class="done"></p>`;
+      const report = (gt) => { try { navigator.sendBeacon('/__events', new Blob([JSON.stringify({type: 'click', gt, path: location.pathname})], {type: 'application/json'})); } catch (e) {} };
+      root.querySelector('input').addEventListener('change', () => report('soup-nl-email'));
+      root.querySelector('button').addEventListener('click', () => {
+        report('soup-nl-add');
+        root.querySelector('.done').textContent = 'Subscribed: ' + root.querySelector('input').value;
+      });
+    }
+  }
+  customElements.define('acme-newsletter', AcmeNewsletter);
+</script>
+{% endblock %}

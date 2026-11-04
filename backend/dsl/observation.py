@@ -68,6 +68,8 @@ class ElementContext(BaseModel):
     section_heading: str | None = None
     fieldset_legend: str | None = None
     list_ref: str | None = None
+    owner_ref: str | None = None  # the combobox/listbox an option belongs to
+    owner_role: str | None = None
     row_text: str | None = None
     frame: str | None = None
     ancestors: list[str] = Field(default_factory=list)  # "role:name" path
@@ -106,7 +108,18 @@ class InventoryElement(BaseModel):
     readonly: bool = False
     value_preview: str | None = None  # redacted for sensitive fields
     options: list[str] = Field(default_factory=list)
+    option_details: list[dict[str, Any]] = Field(default_factory=list)  # label, value, disabled, group
     selected_options: list[str] = Field(default_factory=list)
+    multiple: bool = False
+    datalist: list[str] = Field(default_factory=list)  # browser-rendered suggestions of <input list>
+    min_value: str | None = None
+    max_value: str | None = None
+    step: str | None = None
+    controls: str | None = None  # aria-controls / aria-owns
+    haspopup: str | None = None
+    label_inferred: bool = False  # label read from surrounding text, not associated in markup
+    description: str | None = None
+    in_shadow_dom: bool = False
     bbox: BoundingBox | None = None
     in_viewport: bool = True
     obstructed: bool = False

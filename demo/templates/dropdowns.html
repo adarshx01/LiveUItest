@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Ticket desk - custom dropdowns{% endblock %}
+{% block content %}
+<style>
+  .picker { position: relative; margin-bottom: 14px; }
+  .popup { position: absolute; z-index: 50; background: #fff; border: 1px solid var(--line); border-radius: 8px;
+           box-shadow: 0 8px 24px rgba(0,0,0,.12); min-width: 220px; padding: 4px 0; list-style: none; margin: 0; }
+  .popup [role=option], .popup [role=menuitem], .dd-item { padding: 7px 12px; cursor: pointer; }
+  .popup [role=option]:hover, .popup [role=menuitem]:hover, .dd-item:hover { background: #eef1ff; }
+  .popup [aria-selected=true] { font-weight: 600; }
+  .dd { display: inline-block; position: relative; }
+  .dd-selected { border: 1px solid var(--line); border-radius: 7px; padding: 8px 12px; cursor: pointer; min-width: 200px; background: #fff; }
+  .dd-menu { position: absolute; top: 100%; left: 0; background: #fff; border: 1px solid var(--line); border-radius: 8px; min-width: 200px; z-index: 40; }
+  .chip { display: inline-block; background: #eef1ff; border-radius: 12px; padding: 2px 10px; margin: 0 4px; font-size: 13px; }
+  .virtual { height: 220px; overflow-y: auto; position: relative; }
+  .virtual [role=option] { position: absolute; left: 0; right: 0; height: 32px; box-sizing: border-box; }
+  .lbl { display: block; font-weight: 600; margin: 6px 0; }
+</style>
+<div class="card" style="max-width:760px">
+  <h1>Ticket desk</h1>
+  <p class="muted">Dropdowns drawn by the page: portals, search-as-you-type, virtual scrolling, plain divs, chips and menus.</p>
+
+  <div class="picker"><span class="lbl" id="prio-label">Priority</span>
+    <button type="button" id="prio-btn" class="secondary" aria-haspopup="listbox" aria-expanded="false"
+            aria-labelledby="prio-label prio-btn" data-gt="dd-priority">Choose priority</button></div>
+
+  <div class="picker"><label class="lbl" for="tz">Timezone</label>
+    <input id="tz" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="tz-list"
+           placeholder="Search timezone" autocomplete="off" data-gt="dd-timezone">
+    <ul id="tz-list" role="listbox" class="popup" hidden></ul></div>
+
+  <div class="picker"><span class="lbl" id="emp-label">Assignee</span>
+    <button type="button" id="emp-btn" class="secondary" aria-haspopup="listbox" aria-expanded="false"
+            aria-controls="emp-list" aria-labelledby="emp-label" data-gt="dd-assignee">Select employee</button>
+    <div id="emp-list" role="listbox" class="popup virtual" hidden aria-label="Employees"></div></div>
+
+  <div class="picker"><span class="lbl">Department</span>
+    <div class="dd" data-gt="dd-department">
+      <div class="dd-selected" onclick="toggleDept()">Select department</div>
+      <div class="dd-menu" style="display:none">
+        <div class="dd-item" onclick="pickDept(this)">Engineering</div><div class="dd-item" onclick="pickDept(this)">Finance</div>
+        <div class="dd-item" onclick="pickDept(this)">Human Resources</div><div class="dd-item" onclick="pickDept(this)">Sales</div>
+      </div></div></div>
+
+  <div class="picker"><span class="lbl" id="tags-label">Tags</span>
+    <button type="button" id="tags-btn" class="secondary" aria-haspopup="listbox" aria-expanded="false"
+            aria-controls="tags-list" aria-labelledby="tags-label" data-gt="dd-tags">Add tags</button>
+    <span id="chips"></span>
+    <ul id="tags-list" role="listbox" aria-multiselectable="true" class="popup" hidden>
+      <li role="option" aria-selected="false">Urgent</li><li role="option" aria-selected="false">Customer</li>
+      <li role="option" aria-selected="false">Billing</li><li role="option" aria-selected="false">Bug</li>
+    </ul></div>
+
+  <div class="picker"><span class="lbl">Plan</span>
+    <select id="plan-native" name="plan" style="display:none"><option>Basic</option><option>Pro</option><option>Enterprise</option></select>
+    <button type="button" id="plan-btn" class="secondary" aria-haspopup="listbox" aria-controls="plan-list"
+            aria-label="Plan" data-gt="dd-plan">Basic</button>
+    <ul id="plan-list" role="listbox" class="popup" hidden>
+      <li role="option">Basic</li><li role="option">Pro</li><li role="option">Enterprise</li></ul></div>
+
+  <div class="picker"><button type="button" id="act-btn" aria-haspopup="menu" aria-expanded="false"
+            aria-controls="act-menu" data-gt="dd-actions">Actions</button>
+    <ul id="act-menu" role="menu" class="popup" hidden>
+      <li role="menuitem" onclick="lastAction('Edit')">Edit</li>
+      <li role="menuitem" id="export-item" aria-haspopup="menu" aria-controls="export-menu">Export ▸</li>
+      <li role="menuitem" onclick="lastAction('Archive')">Archive</li></ul>
+    <ul id="export-menu" role="menu" class="popup" hidden aria-label="Export">
+      <li role="menuitem" onclick="lastAction('Export > CSV')" data-gt="dd-export-csv">CSV</li>
+      <li role="menuitem" onclick="lastAction('Export > PDF')" data-gt="dd-export-pdf">PDF</li></ul></div>
+
+  <div id="ticket-summary" role="status"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const summary = {};
+  function show(key, value) {
+    summary[key] = value;
+    document.getElementById('ticket-summary').innerHTML = Object.entries(summary).map(([k, v]) => `<div>${k}: ${v}</div>`).join('');
+  }
+  function origin(popup) {  // coordinates are relative to the popup's positioned ancestor (or the document)
+    const op = popup.offsetParent;
+    return op && op !== document.body ? op.getBoundingClientRect() : {top: -window.scrollY, left: -window.scrollX};
+  }
+  function placeUnder(popup, anchor) {
+    popup.style.position = 'absolute';
+    const r = anchor.getBoundingClientRect(), o = origin(popup);
+    popup.style.top = (r.bottom - o.top + 4) + 'px'; popup.style.left = (r.left - o.left) + 'px';
+  }
+  function placeRight(popup, anchor) {
+    popup.style.position = 'absolute';
+    const r = anchor.getBoundingClientRect(), o = origin(popup);
+    popup.style.top = (r.top - o.top) + 'px'; popup.style.left = (r.right - o.left + 2) + 'px';
+  }
+  function report(gt) { try { navigator.sendBeacon('/__events', new Blob([JSON.stringify({type: 'click', gt, path: location.pathname})], {type: 'application/json'})); } catch (e) {} }
+
+  // (a) portal listbox: options are created at the end of <body> when the button opens
+  const prioBtn = document.getElementById('prio-btn');
+  prioBtn.addEventListener('click', () => {
+    let list = document.getElementById('prio-list');
+    if (list) { list.remove(); prioBtn.setAttribute('aria-expanded', 'false'); return; }
+    list = document.createElement('ul'); list.id = 'prio-list'; list.setAttribute('role', 'listbox'); list.className = 'popup';
+    ['Low', 'Medium', 'High', 'Critical'].forEach(p => {
+      const li = document.createElement('li'); li.setAttribute('role', 'option'); li.textContent = p;
+      li.addEventListener('click', () => { prioBtn.textContent = p; show('Priority', p); report('dd-priority-option'); list.remove();
+                                           prioBtn.setAttribute('aria-expanded', 'false'); });
+      list.appendChild(li);
+    });
+    document.body.appendChild(list); placeUnder(list, prioBtn);
+    prioBtn.setAttribute('aria-controls', 'prio-list'); prioBtn.setAttribute('aria-expanded', 'true');
+  });
+
+  // (b) search-as-you-type combobox with debounced suggestions
+  const ZONES = ['Africa/Cairo (EET)', 'Africa/Lagos (WAT)', 'America/Chicago (CST)', 'America/Los_Angeles (PST)',
+    'America/New_York (EST)', 'America/Sao_Paulo (BRT)', 'Asia/Dubai (GST)', 'Asia/Kolkata (IST)', 'Asia/Singapore (SGT)',
+    'Asia/Tokyo (JST)', 'Australia/Sydney (AEST)', 'Europe/Berlin (CET)', 'Europe/London (GMT)', 'Europe/Paris (CET)',
+    'Pacific/Auckland (NZST)'];
+  const tz = document.getElementById('tz'), tzList = document.getElementById('tz-list');
+  let tzTimer = null;
+  function renderZones() {
+    const q = tz.value.toLowerCase();
+    const hits = ZONES.filter(z => !q || z.toLowerCase().includes(q)).slice(0, 8);
+    tzList.innerHTML = hits.map(z => `<li role="option">${z}</li>`).join('');
+    tzList.hidden = !hits.length; tz.setAttribute('aria-expanded', String(!!hits.length));
+    tzList.querySelectorAll('li').forEach(li => li.addEventListener('click', () => {
+      tz.value = li.textContent; tzList.hidden = true; show('Timezone', li.textContent); report('dd-timezone-option'); }));
+  }
+  tz.addEventListener('input', () => { clearTimeout(tzTimer); tzTimer = setTimeout(renderZones, 150); });
+  tz.addEventListener('focus', renderZones);
+
+  // (c) virtualized list: 400 rows, only the rows in view exist in the DOM
+  const FIRST = ['Aarav', 'Bina', 'Chen', 'Dana', 'Eli', 'Farah', 'Gopal', 'Hana', 'Ivan', 'Jaya', 'Kofi', 'Lena', 'Mei', 'Noor', 'Omar', 'Priya', 'Quinn', 'Ravi', 'Sara', 'Tomas'];
+  const LAST = ['Nair', 'Okafor', 'Silva', 'Kim', 'Rossi', 'Haddad', 'Iyer', 'Novak', 'Mori', 'Patel', 'Diaz', 'Berg', 'Khan'];
+  const EMPLOYEES = Array.from({length: 400}, (_, i) => `${FIRST[i % FIRST.length]} ${LAST[(i * 7) % LAST.length]} #${String(i + 1).padStart(3, '0')}`);
+  const empBtn = document.getElementById('emp-btn'), empList = document.getElementById('emp-list');
+  const ROW = 32;
+  const spacer = document.createElement('div'); spacer.style.height = (EMPLOYEES.length * ROW) + 'px';
+  empList.appendChild(spacer);
+  function renderRows() {
+    empList.querySelectorAll('[role=option]').forEach(n => n.remove());
+    const first = Math.max(0, Math.floor(empList.scrollTop / ROW) - 2), last = Math.min(EMPLOYEES.length, first + 12);
+    for (let i = first; i < last; i++) {
+      const row = document.createElement('div'); row.setAttribute('role', 'option'); row.textContent = EMPLOYEES[i];
+      row.style.top = (i * ROW) + 'px';
+      row.addEventListener('click', () => { empBtn.textContent = EMPLOYEES[i]; show('Assignee', EMPLOYEES[i]); report('dd-assignee-option');
+                                            empList.hidden = true; empBtn.setAttribute('aria-expanded', 'false'); });
+      empList.appendChild(row);
+    }
+  }
+  empList.addEventListener('scroll', renderRows);
+  empBtn.addEventListener('click', () => { empList.hidden = !empList.hidden; empBtn.setAttribute('aria-expanded', String(!empList.hidden));
+                                           if (!empList.hidden) { placeUnder(empList, empBtn); renderRows(); } });
+
+  // (d) div soup: no roles, no ARIA, click handlers on divs
+  function toggleDept() { const m = document.querySelector('.dd-menu'); m.style.display = m.style.display === 'none' ? 'block' : 'none'; }
+  function pickDept(el) { document.querySelector('.dd-selected').textContent = el.textContent; toggleDept(); show('Department', el.textContent); report('dd-department-option'); }
+
+  // (e) multi-select listbox with chips; stays open until Escape / outside click
+  const tagsBtn = document.getElementById('tags-btn'), tagsList = document.getElementById('tags-list');
+  tagsBtn.addEventListener('click', () => { tagsList.hidden = !tagsList.hidden; tagsBtn.setAttribute('aria-expanded', String(!tagsList.hidden)); placeUnder(tagsList, tagsBtn); });
+  tagsList.querySelectorAll('[role=option]').forEach(li => li.addEventListener('click', () => {
+    li.setAttribute('aria-selected', String(li.getAttribute('aria-selected') !== 'true'));
+    const chosen = Array.from(tagsList.querySelectorAll('[aria-selected=true]')).map(n => n.textContent);
+    document.getElementById('chips').innerHTML = chosen.map(t => `<span class="chip">${t}</span>`).join('');
+    show('Tags', chosen.join(', ')); report('dd-tags-option');
+  }));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { tagsList.hidden = true; tagsBtn.setAttribute('aria-expanded', 'false'); } });
+
+  // (f) hidden native select behind a custom UI (select2-style)
+  const planBtn = document.getElementById('plan-btn'), planList = document.getElementById('plan-list'), planNative = document.getElementById('plan-native');
+  planBtn.addEventListener('click', () => { planList.hidden = !planList.hidden; placeUnder(planList, planBtn); });
+  planList.querySelectorAll('[role=option]').forEach(li => li.addEventListener('click', () => {
+    planNative.value = li.textContent; planNative.dispatchEvent(new Event('change'));
+    planBtn.textContent = li.textContent; planList.hidden = true; show('Plan', li.textContent); report('dd-plan-option'); }));
+
+  // (g) menu button with a submenu
+  const actBtn = document.getElementById('act-btn'), actMenu = document.getElementById('act-menu'), exportMenu = document.getElementById('export-menu');
+  actBtn.addEventListener('click', () => { actMenu.hidden = !actMenu.hidden; exportMenu.hidden = true; placeUnder(actMenu, actBtn); actBtn.setAttribute('aria-expanded', String(!actMenu.hidden)); });
+  document.getElementById('export-item').addEventListener('click', (e) => {
+    exportMenu.hidden = false; placeRight(exportMenu, e.currentTarget); });
+  function lastAction(a) { actMenu.hidden = true; exportMenu.hidden = true; show('Last action', a); }
+</script>
+{% endblock %}

@@ -37,7 +37,7 @@ from backend.agents.grounding.locator_strategy import (
     LocatorStrategy,
     validated_selectors,
 )
-from backend.agents.observation.page_observer import PageObserver, observation_store
+from backend.agents.observation.page_observer import PageObserver
 from backend.agents.planner.lexicon import normalize_text
 from backend.agents.planner.variable_resolver import ResolvedValue, VariableResolver
 from backend.agents.recovery.failure_classifier import FailureAnalysis, classify_failure
@@ -220,6 +220,7 @@ class ExecutionRuntime:
         self.steps_by_id: dict[str, Step] = {s.id: s for s in request.spec.flat_steps()}
         self.memory_lookups = 0
         self.memory_hits = 0
+        self.memory_fastpath = 0  # steps replayed straight from validated memory (no scoring, no model)
         self.recoveries = 0
         self.retries = 0
         self.security_warnings: list[str] = []
@@ -391,11 +392,18 @@ class ExecutionRuntime:
                                excluded_keys=set(work.excluded), frame_hint=step.target.frame_hint)
         if not work.drop_memory:
             ctx.memory_strategies = [(c.strategy, c.confidence, c.memory_id) for c in work.memory]
-        decision = self.grounder.ground(step, obs, ctx)
-        if decision.decision in ("refine", "ask_human", "not_found") and not work.force_visual:
-            decision = await self._refine(step, obs, ctx, decision)
-        if self._needs_visual(step, decision) or work.force_visual:
-            decision = await self._visual_ground(step, obs, decision)
+        fast = self._memory_fastpath(step, obs, work, ctx)
+        if fast is not None:
+            decision = fast
+            self.memory_fastpath += 1
+            await self.emit("MEMORY_FASTPATH", f"replayed validated strategy for {fast.display} directly",
+                            step_id=step.id, memory_id=fast.memory_id, confidence=fast.confidence)
+        else:
+            decision = self.grounder.ground(step, obs, ctx)
+            if decision.decision in ("refine", "ask_human", "not_found") and not work.force_visual:
+                decision = await self._refine(step, obs, ctx, decision)
+            if self._needs_visual(step, decision) or work.force_visual:
+                decision = await self._visual_ground(step, obs, decision)
         work.decision = decision
         work.element = obs.element(decision.element_id) if decision.element_id else None
         if step.action == ActionType.DRAG and step.destination is not None:
@@ -422,6 +430,57 @@ class ExecutionRuntime:
                         candidates=[{"display": c.display, "score": c.score} for c in decision.candidates[:4]])
         return decision
 
+    def _memory_fastpath(self, step: Step, obs: Observation, work: StepWork,
+                         ctx: GroundingContext) -> GroundingDecision | None:
+        """Replay a validated strategy for the same application page and step without re-deciding.
+
+        The strategy must re-ground on the *live* page uniquely and almost perfectly, the element must be
+        usable for this action and must still mean what the step asks (name/purpose/test id). Anything less
+        returns None and the full grounding - scoring, refinement and, when configured, the model - takes
+        over; a remembered element that then fails verification is penalised and dropped by recovery.
+        """
+
+        from backend.agents.grounding.element_grounder import (
+            ACTION_FOR_GROUNDING,
+            _hard_excluded,
+            name_score,
+        )
+        from backend.agents.grounding.locator_strategy import resolve_strategy
+        from backend.agents.planner.lexicon import purpose_compatible
+        from backend.dsl.results import GroundingCandidate
+
+        if work.drop_memory or not work.memory or work.excluded or work.force_visual or step.target is None:
+            return None
+        if step.target.ordinal is not None or step.target.position_hint or step.action == ActionType.DRAG:
+            return None  # positional instructions are decided on the live layout every time
+        top = work.memory[0]
+        if top.match_level not in ("exact_test_case", "exact_route") or top.confidence < 0.6:
+            return None
+        resolution = resolve_strategy(top.strategy, obs)
+        el = resolution.element
+        if el is None or resolution.ambiguous or resolution.quality < 0.85:
+            return None
+        action = ACTION_FOR_GROUNDING.get(step.action, "click")
+        if _hard_excluded(step, step.target, el, action, ctx) or not el.enabled or el.obstructed:
+            return None
+        meaning, _ = name_score(step.target, el)
+        same_purpose = purpose_compatible(step.target.purpose, el.semantic_purpose) > 0
+        if meaning < 0.5 and not same_purpose and "test_id" not in resolution.matched_on:
+            return None  # the remembered element no longer means what this step asks
+        confidence = round(min(0.99, 0.9 + 0.09 * resolution.quality * min(1.0, top.confidence / 0.9)), 4)
+        return GroundingDecision(
+            element_id=el.element_id, ref=el.ref, display=el.display(), role=el.role, name=el.name or el.label or "",
+            confidence=confidence, decision=self.grounder.decide(confidence), method="memory_fastpath",
+            candidates=[GroundingCandidate(element_id=el.element_id, ref=el.ref, display=el.display(),
+                                           score=confidence, features={"memory": resolution.quality},
+                                           evidence=[f"matched on {', '.join(resolution.matched_on[:5])}"],
+                                           bbox=el.bbox.model_dump() if el.bbox else None)],
+            evidence=[f"validated memory replayed directly (re-grounded {resolution.quality:.2f} on "
+                      f"{', '.join(resolution.matched_on[:5])}; {top.successes} verified uses)",
+                      "no candidate scoring or model call needed"],
+            bbox=el.bbox.model_dump() if el.bbox else None, memory_id=top.memory_id,
+            reason="memory fast path")
+
     async def _memory_miss(self, step: Step, work: StepWork, decision: GroundingDecision) -> None:
         """Validated memory exists but no longer matches the live page: the UI changed.
 
@@ -431,6 +490,11 @@ class ExecutionRuntime:
         """
 
         stale = work.memory[0]
+        if stale.match_level == "semantic":
+            # memory of a *similar* step that does not fit this one: not applicable, not a UI change
+            work.drop_memory = True
+            decision.evidence.append(f"memory of a similar step ({stale.strategy.describe()}) does not apply here")
+            return
         work.healed = True
         work.drop_memory = True
         work.failed_strategies.append(stale.strategy.model_dump(exclude_none=True))
@@ -987,9 +1051,14 @@ class ExecutionRuntime:
                                                      "reground_with_context", "visual_grounding"):
             work.failed_strategies.append(LocatorStrategy.from_element(work.element, work.before)
                                           .model_dump(exclude_none=True))
-        if work.used_memory_id and self.memory is not None and strategy == "reground_without_memory":
+        if work.used_memory_id and self.memory is not None and strategy in (
+                "reground_without_memory", "reground_excluding_previous", "reground_with_context",
+                "reobserve_and_reground", "visual_grounding"):
+            # the remembered target did not work out: penalise it and let full grounding (and the model) decide
             await self.memory.record_strategy_failure(work.used_memory_id, execution_id=self.execution_id,
                                                       reason=work.analysis.root_cause if work.analysis else "")
+            work.drop_memory = True
+            work.used_memory_id = None
         ok, detail = True, ""
         if strategy in ("reobserve_and_reground", "reground_with_context"):
             self.dirty = True

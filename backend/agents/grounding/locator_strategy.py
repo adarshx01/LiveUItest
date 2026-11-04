@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
-from backend.agents.grounding.text_match import similarity
+from backend.agents.grounding.fuzzy import match_score as similarity
 from backend.agents.planner.lexicon import normalize_text
 from backend.dsl.observation import InventoryElement, Observation
 

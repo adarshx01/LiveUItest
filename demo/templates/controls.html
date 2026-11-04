@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Trip planner - native controls{% endblock %}
+{% block content %}
+<div class="card" style="max-width:640px">
+  <h1>Trip planner</h1>
+  <p class="muted">Native, browser-rendered controls: their popups and pickers are drawn by the OS/browser.</p>
+  <form id="trip" aria-label="Trip planner" onsubmit="return planTrip(event)">
+    <label for="country">Country</label>
+    <select id="country" name="country" data-gt="ctl-country">
+      <option value="">-- Select a country --</option>
+      <optgroup label="Asia">
+        <option value="IN">India</option><option value="JP">Japan</option><option value="SG">Singapore</option>
+      </optgroup>
+      <optgroup label="Europe">
+        <option value="FR">France</option><option value="DE">Germany</option><option value="GB">United Kingdom</option>
+      </optgroup>
+      <optgroup label="Americas">
+        <option value="CA">Canada</option><option value="US">United States</option>
+      </optgroup>
+      <option value="AQ" disabled>Antarctica (unavailable)</option>
+    </select>
+
+    <label for="city">City</label>
+    <select id="city" name="city" data-gt="ctl-city" disabled><option value="">Choose a country first</option></select>
+
+    <label for="languages">Languages spoken</label>
+    <select id="languages" name="languages" multiple size="5" data-gt="ctl-languages">
+      <option>English</option><option>Hindi</option><option>Malayalam</option><option>French</option><option>German</option>
+    </select>
+
+    <label for="browser">Preferred browser</label>
+    <input id="browser" name="browser" list="browsers" data-gt="ctl-browser">
+    <datalist id="browsers"><option value="Chrome"><option value="Firefox"><option value="Safari"><option value="Microsoft Edge"></datalist>
+
+    <div class="row">
+      <div><label for="depart">Departure date</label><input id="depart" type="date" name="depart" data-gt="ctl-date"></div>
+      <div><label for="time">Departure time</label><input id="time" type="time" name="time" data-gt="ctl-time"></div>
+    </div>
+    <div class="row">
+      <div><label for="tag">Luggage tag color</label><input id="tag" type="color" name="tag" value="#000000" data-gt="ctl-color"></div>
+      <div><label for="travellers">Travellers</label><input id="travellers" type="number" min="1" max="9" name="travellers" data-gt="ctl-travellers"></div>
+    </div>
+    <label for="budget">Budget (USD)</label>
+    <input id="budget" type="range" min="0" max="5000" step="100" value="1000" name="budget" data-gt="ctl-budget">
+    <output id="budget-out" for="budget">1000</output>
+    <p><button type="submit" data-gt="ctl-submit">Plan trip</button></p>
+  </form>
+  <div id="trip-summary" role="status" aria-live="polite"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const CITIES = {IN: ['Kochi', 'Mumbai', 'Bengaluru'], JP: ['Tokyo', 'Osaka'], SG: ['Singapore'], FR: ['Paris', 'Lyon'],
+                  DE: ['Berlin', 'Munich'], GB: ['London', 'Edinburgh'], CA: ['Toronto', 'Vancouver'], US: ['New York', 'Austin']};
+  const country = document.getElementById('country'), city = document.getElementById('city');
+  country.addEventListener('change', () => {
+    city.disabled = true;
+    city.innerHTML = '<option value="">Loading…</option>';
+    setTimeout(() => {  // the dependent list arrives asynchronously, like a real API call
+      city.innerHTML = '<option value="">-- Select a city --</option>' +
+        (CITIES[country.value] || []).map(c => `<option>${c}</option>`).join('');
+      city.disabled = !country.value;
+    }, 900);
+  });
+  const budget = document.getElementById('budget');
+  budget.addEventListener('input', () => { document.getElementById('budget-out').textContent = budget.value; });
+  function planTrip(e) {
+    e.preventDefault();
+    const v = (id) => document.getElementById(id).value;
+    const langs = Array.from(document.getElementById('languages').selectedOptions).map(o => o.text).join(', ');
+    const lines = [
+      `Country: ${country.selectedOptions[0] ? country.selectedOptions[0].text : ''}`, `City: ${v('city')}`,
+      `Languages: ${langs}`, `Browser: ${v('browser')}`, `Date: ${v('depart')}`, `Time: ${v('time')}`,
+      `Color: ${v('tag')}`, `Budget: ${v('budget')}`, `Travellers: ${v('travellers')}`];
+    document.getElementById('trip-summary').innerHTML = '<h2>Trip planned</h2>' + lines.map(l => `<div>${l}</div>`).join('');
+    return false;
+  }
+</script>
+{% endblock %}

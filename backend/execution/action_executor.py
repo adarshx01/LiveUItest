@@ -14,11 +14,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from backend.agents.forms.option_matcher import match_option as _match_option
+from backend.agents.forms.value_normalizer import PICKER_TYPES, normalize_for_input
 from backend.agents.governance.redaction import redact_text
 from backend.agents.grounding.element_grounder import ElementGrounder, GroundingContext
 from backend.agents.grounding.text_match import similarity
 from backend.agents.observation.page_observer import PageObserver
-from backend.agents.planner.lexicon import normalize_text
 from backend.browser.js_probes import (
     ELEMENT_STATE,
     MASK_SENSITIVE_FIELD,
@@ -34,6 +35,7 @@ from backend.core.logging import get_logger
 from backend.dsl.models import ActionType, Step, TargetSpec
 from backend.dsl.observation import InventoryElement, Observation
 from backend.dsl.results import FailureCategory
+from backend.execution.dropdown import DropdownDriver
 
 log = get_logger(__name__)
 
@@ -68,20 +70,14 @@ def target_of(el: InventoryElement) -> str | None:
 
 
 def match_option(options: list[str], wanted: str) -> tuple[str | None, str]:
-    """Exact -> case-insensitive -> normalized -> unique containment. Never 'closest guess'."""
+    """Backward-compatible wrapper around ``option_matcher.match_option`` (label, how)."""
 
-    if wanted in options:
-        return wanted, "exact"
-    low = {o.lower(): o for o in options}
-    if wanted.lower() in low:
-        return low[wanted.lower()], "case_insensitive"
-    norm = {normalize_text(o): o for o in options}
-    if normalize_text(wanted) in norm:
-        return norm[normalize_text(wanted)], "normalized"
-    contains = [o for o in options if normalize_text(wanted) and normalize_text(wanted) in normalize_text(o)]
-    if len(contains) == 1:
-        return contains[0], "contains"
-    return None, "not_found"
+    result = _match_option(options, wanted)
+    return result.label, result.how
+
+
+def _is_native_select(el: InventoryElement) -> bool:
+    return el.tag == "select" or (el.role in ("combobox", "listbox") and bool(el.option_details))
 
 
 class InteractionExecutor:
@@ -92,9 +88,24 @@ class InteractionExecutor:
         self.adapter = session.adapter
         self.observer = observer
         self.grounder = grounder
+        self.dropdowns = DropdownDriver(self.adapter, observer)
 
     # ------------------------------------------------------------------ element actions
     async def click(self, el: InventoryElement, *, double: bool = False, right: bool = False) -> ActionOutcome:
+        if not double and not right and _is_native_select(el) and not el.multiple:
+            # "Click the Country dropdown": a native popup is drawn by the OS and cannot be operated by
+            # clicking; the following "Click India" / "Select India" is performed with select_option
+            return ActionOutcome(True, no_op=True, tool="browser_select_option",
+                                 notes=["native select: its popup is OS-rendered; the option is chosen with "
+                                        "select_option instead of opening it"],
+                                 expected={"native_select_opened": True})
+        if el.role == "option" and el.context.owner_ref and not double and not right:
+            native = await self.dropdowns.select_native(el.context.owner_ref, f"select owning {el.display()}",
+                                                        el.name or el.text)
+            if native is not None:
+                native.notes.insert(0, f"'{el.name}' is an option of a native select: selected it instead of "
+                                       "clicking inside the OS-rendered popup")
+                return native
         target = target_of(el)
         if target is None:
             if el.bbox is None:
@@ -110,19 +121,37 @@ class InteractionExecutor:
 
     async def fill(self, el: InventoryElement, text: str, *, sensitive: bool, slowly: bool = False,
                    observation: Observation | None = None) -> ActionOutcome:
-        if el.role == "combobox" and (el.options or el.tag == "select"):
+        if _is_native_select(el) and el.tag != "input":
             outcome = await self.select(el, text, observation)
             outcome.notes.insert(0, "field is a native select; used select_option instead of typing")
             return outcome
         target = target_of(el)
         if target is None:
             return ActionOutcome(False, error="element is not addressable", failure_category=FailureCategory.ELEMENT_NOT_FOUND)
-        autocomplete = el.role == "combobox" and el.tag == "input"
+        notes: list[str] = []
+        input_type = (el.input_type or "").lower()
+        if not sensitive and (input_type in PICKER_TYPES or input_type == "number"):
+            # browser-rendered pickers (date, time, color, range...) accept one machine format and no keystrokes
+            normalized = normalize_for_input(text, input_type, min_value=el.min_value, max_value=el.max_value,
+                                             step=el.step)
+            if not normalized.ok:
+                return ActionOutcome(False, error=f"{normalized.note} ({el.display()})",
+                                     failure_category=FailureCategory.FORM_VALIDATION_FAILED,
+                                     expected={"value": text, "sensitive": False})
+            if normalized.changed and normalized.note:
+                notes.append(normalized.note)
+            text, slowly = normalized.value, False
+        elif el.datalist and not sensitive:
+            match = _match_option(el.datalist, text)
+            if match.found and match.label != text:
+                notes.append(f"datalist suggestion {match.describe()} (browser-rendered list, value typed)")
+                text = match.label or text
+        autocomplete = el.role == "combobox" and el.tag == "input" and not el.datalist and input_type not in PICKER_TYPES
         response = await self.adapter.type_text(target, el.display(), text, slowly=slowly or autocomplete,
                                                 sensitive=sensitive)
         outcome = ActionOutcome.from_response(response, args={"target": target, "element": el.display(),
                                                               "text": "••••••" if sensitive else text},
-                                              expected={"value": text, "sensitive": sensitive})
+                                              expected={"value": text, "sensitive": sensitive}, notes=notes)
         if response.ok and sensitive and text and (el.input_type or "").lower() != "password":
             # browsers already render password inputs as discs; anything else would show the secret in the
             # after-action screenshot and every later one
@@ -130,88 +159,65 @@ class InteractionExecutor:
             outcome.notes.append("sensitive field rendered masked for screenshots" if masked
                                  else "WARNING: could not mask the sensitive field for screenshots")
         if response.ok and autocomplete:
-            picked = await self._pick_autocomplete(text)
+            picked = await self._pick_autocomplete(text, el)
             if picked:
                 outcome.notes.append(f"selected autocomplete suggestion '{picked}'")
                 outcome.expected = {"value": picked, "sensitive": False}
         return outcome
 
-    async def _pick_autocomplete(self, text: str) -> str | None:
-        for _ in range(6):
+    async def _pick_autocomplete(self, text: str, el: InventoryElement | None = None) -> str | None:
+        """After typing into an autocomplete, pick the suggestion the text means (free text stays if none)."""
+
+        target = target_of(el) if el is not None else None
+        for _ in range(7):
             await asyncio.sleep(0.35)
-            obs = await self.observer.observe(with_tabs=False, with_signals=False)
-            options = [e for e in obs.elements if e.role == "option" and e.visible and e.ref]
-            if options:
-                chosen, how = match_option([o.name for o in options], text)
-                if chosen is None:
-                    starts = [o for o in options if o.name.lower().startswith(text.lower())]
-                    chosen = starts[0].name if len(starts) == 1 else None
-                if chosen is None:
-                    return None
-                el = next(o for o in options if o.name == chosen)
-                response = await self.adapter.click(el.ref or "", f'option "{chosen}"')
-                return chosen if response.ok else None
+            if target and el is not None:
+                options = await self.dropdowns._popup_options(target, el)
+            else:
+                obs = await self.observer.observe(with_tabs=False, with_signals=False)
+                options = [{"text": e.name or e.text, "ref": e.ref, "css": e.css_selector, "box": None}
+                           for e in obs.elements if e.role == "option" and e.visible and (e.ref or e.css_selector)]
+            if not options:
+                continue
+            match = _match_option([{"label": o["text"], "value": o.get("value")} for o in options], text)
+            chosen = options[match.option.index] if match.found and match.option is not None else None
+            if chosen is None:
+                starts = [o for o in options if o["text"].lower().startswith(text.lower())]
+                chosen = starts[0] if len(starts) == 1 else None
+            if chosen is None:
+                return None
+            return chosen["text"] if await self.dropdowns._click_option(chosen) else None
         return None
 
     async def select(self, el: InventoryElement, option: str, observation: Observation | None) -> ActionOutcome:
-        if el.role in ("radio", "tab", "button", "option", "menuitemradio", "checkbox", "switch"):
+        if el.role == "option" and el.context.owner_ref:
+            native = await self.dropdowns.select_native(el.context.owner_ref, f"select owning {el.display()}", option)
+            if native is not None:
+                return native
+        if el.role in ("radio", "tab", "button", "option", "menuitemradio", "checkbox", "switch") and \
+                not el.haspopup and not el.controls:
             outcome = await self.click(el)
             outcome.expected = {"selected_option": option, "kind": el.role}
             outcome.notes.append(f"choice '{option}' is a {el.role}; clicked it")
             return outcome
         target = target_of(el)
-        if el.options or el.tag == "select":
-            chosen, how = match_option(el.options, option)
-            if chosen is None:
-                return ActionOutcome(False, error=f"option {option!r} not offered; available: {el.options[:15]}",
-                                     failure_category=FailureCategory.OPTION_NOT_FOUND,
-                                     expected={"selected_option": option})
-            response = await self.adapter.select_option(target or "", el.display(), [chosen])
-            out = ActionOutcome.from_response(response, args={"target": target, "values": [chosen]},
-                                              expected={"selected_option": chosen, "kind": "native"})
-            if how != "exact":
-                out.notes.append(f"matched option '{chosen}' ({how})")
-            return out
-        return await self._custom_select(el, option)
-
-    async def _custom_select(self, el: InventoryElement, option: str) -> ActionOutcome:
-        """Open a custom dropdown, find the option (filtering if supported), pick it."""
-
-        opened = await self.click(el)
-        if not opened.ok:
-            opened.failure_category = opened.failure_category or FailureCategory.DROPDOWN_NOT_OPEN
-            return opened
-        notes = ["opened custom dropdown"]
-        for attempt in range(8):
-            await asyncio.sleep(0.3)
-            obs = await self.observer.observe(with_tabs=False, with_signals=False)
-            options = [e for e in obs.elements if e.role in ("option", "menuitem", "menuitemradio", "treeitem")
-                       and e.visible and (e.ref or e.css_selector)]
-            if options:
-                chosen, how = match_option([o.name or o.text for o in options], option)
-                if chosen is not None:
-                    opt_el = next(o for o in options if (o.name or o.text) == chosen)
-                    response = await self.adapter.click(target_of(opt_el) or "", f'option "{chosen}"')
-                    out = ActionOutcome.from_response(response, args={"target": target_of(el), "option": chosen},
-                                                      expected={"selected_option": chosen, "kind": "custom",
-                                                                "trigger": el.name},
-                                                      notes=notes + [f"picked option '{chosen}' ({how})"])
-                    return out
-            search = next((e for e in obs.elements if e.role in ("searchbox", "textbox") and e.visible and e.ref
-                           and (e.context.list_ref or "search" in normalize_text(e.name + " " + (e.placeholder or ""))
-                                or "filter" in normalize_text(e.placeholder or ""))
-                           and e.element_id not in (el.element_id,)), None)
-            if search is not None and attempt in (1, 3):
-                await self.adapter.type_text(search.ref or "", search.display(), option, slowly=True)
-                notes.append(f"filtered options with '{option}'")
-                continue
-            if attempt == 2 and not options:
-                await self.adapter.press_key("ArrowDown")
-                notes.append("pressed ArrowDown to open list")
-        failure = FailureCategory.OPTION_NOT_FOUND if options else FailureCategory.DROPDOWN_NOT_OPEN
-        return ActionOutcome(False, error=f"option {option!r} not found in custom dropdown "
-                                          f"(visible options: {[o.name for o in options][:10]})",
-                             failure_category=failure, notes=notes, expected={"selected_option": option})
+        if target and (_is_native_select(el) or el.tag == "select"):
+            native = await self.dropdowns.select_native(target, el.display(), option)
+            if native is not None:
+                return native
+        if target and el.tag in ("input", "textarea") and not el.datalist and el.role not in ("combobox",) \
+                and not el.haspopup and not el.controls:
+            # "Set the luggage color to red" on <input type=color>, "set budget to 2500" on a slider
+            outcome = await self.fill(el, option, sensitive=False)
+            outcome.notes.insert(0, f"'{el.display()}' is an input, not a list: the choice is entered as its value")
+            return outcome
+        if el.datalist and target:
+            match = _match_option(el.datalist, option)
+            value = match.label if match.found else option
+            outcome = await self.fill(el, value or option, sensitive=False)
+            outcome.notes.insert(0, f"input with a browser-rendered datalist: typed {match.describe() if match.found else repr(option)}")
+            return outcome
+        return await self.dropdowns.select_custom(el, option)
 
     async def set_checked(self, el: InventoryElement, desired: bool | None) -> ActionOutcome:
         current = el.checked

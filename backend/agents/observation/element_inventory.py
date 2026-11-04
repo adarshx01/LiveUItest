@@ -13,7 +13,12 @@ from typing import Any
 
 from backend.agents.observation.element_classifier import classify_element
 from backend.agents.observation.snapshot_parser import ancestors, node_text
-from backend.agents.planner.lexicon import INTERACTIVE_ROLES, LANDMARK_ROLES, classify_phrase, normalize_text
+from backend.agents.planner.lexicon import (
+    INTERACTIVE_ROLES,
+    LANDMARK_ROLES,
+    classify_phrase,
+    normalize_text,
+)
 from backend.core.ids import stable_hash
 from backend.dsl.observation import (
     BoundingBox,
@@ -118,7 +123,8 @@ class InventoryBuilder:
             if idx in used_dom or not item.get("visible"):
                 continue
             tag = item.get("tag")
-            clickable = item.get("cursorPointer") or item.get("draggable") or tag in ("canvas",)
+            clickable = item.get("cursorPointer") or item.get("draggable") or tag in ("canvas",) or \
+                item.get("editable") or (tag in ("input", "select", "textarea", "button") and item.get("shadow"))
             if not clickable:
                 continue
             elements.append(self._element_from_dom(item, len(elements)))
@@ -151,6 +157,10 @@ class InventoryBuilder:
                 ctx.row_text = node_text(nodes, anc.index, 200)
             elif anc.role in ("list", "table", "grid", "listbox", "menu", "tablist") and ctx.list_ref is None:
                 ctx.list_ref = anc.ref
+                if node.role in ("option", "menuitem", "menuitemradio", "menuitemcheckbox") and ctx.owner_ref is None:
+                    ctx.owner_ref, ctx.owner_role = anc.ref, anc.role
+            elif anc.role == "combobox" and ctx.owner_ref is None:
+                ctx.owner_ref, ctx.owner_role = anc.ref, "combobox"
             elif anc.role == "iframe" and ctx.frame is None:
                 ctx.frame = node.frame
             if anc.role not in ("generic",) or anc.name:
@@ -207,6 +217,18 @@ class InventoryBuilder:
         element.autocomplete = dom.get("autocomplete")
         element.title = dom.get("title")
         element.label = dom.get("label") or None
+        if not element.label and dom.get("inferredLabel"):
+            element.label, element.label_inferred = dom["inferredLabel"], True
+        element.description = dom.get("description") or None
+        element.in_shadow_dom = bool(dom.get("shadow"))
+        element.multiple = bool(dom.get("multiple"))
+        element.datalist = list(dom.get("datalist") or [])
+        element.min_value, element.max_value, element.step = dom.get("min"), dom.get("max"), dom.get("step")
+        element.controls, element.haspopup = dom.get("controls"), dom.get("haspopup")
+        if dom.get("optionDetails"):
+            element.option_details = list(dom["optionDetails"])
+        if dom.get("editable") and element.role not in ("textbox", "searchbox", "combobox"):
+            element.editable = True
         element.placeholder = element.placeholder or dom.get("placeholder")
         element.css_selector = dom.get("css")
         element.classes = dom.get("classes")
@@ -225,8 +247,10 @@ class InventoryBuilder:
             element.value_preview = "••••••" if dom.get("valueLength") else ""
         elif dom.get("value") is not None:
             element.value_preview = str(dom["value"])[:80]
-        if dom.get("options") and not element.options:
-            element.options = list(dom["options"])
+        if dom.get("options") and (not element.options or dom.get("tag") == "select"):
+            element.options = list(dom["options"])  # live DOM labels win over the snapshot's names
+        if dom.get("tag") == "input" and element.datalist:
+            element.options = []  # datalist suggestions are not a native select: they are typed
         if dom.get("selectedOptions") is not None:
             element.selected_options = list(dom["selectedOptions"])
         if dom.get("legend"):
@@ -247,10 +271,13 @@ class InventoryBuilder:
         box = item.get("box") or [0, 0, 0, 0]
         bbox = BoundingBox(x=box[0], y=box[1], width=box[2], height=box[3])
         role = _dom_role(item)
-        if item.get("draggable"):
-            role = role if role != "generic" else "generic"
+        if item.get("editable") and role == "generic":
+            role = "textbox"  # contenteditable region
         el = InventoryElement(
-            element_id=f"el{position}", ref=None, role=role,
+            element_id=f"el{position}", ref=None, role=role, editable=bool(item.get("editable")),
+            label=item.get("label") or item.get("inferredLabel") or None,
+            label_inferred=bool(not item.get("label") and item.get("inferredLabel")),
+            in_shadow_dom=bool(item.get("shadow")), controls=item.get("controls"), haspopup=item.get("haspopup"),
             name=item.get("ariaLabel") or item.get("title") or item.get("alt") or "",
             text=item.get("text") or "", tag=item.get("tag"), dom_id=item.get("id"), name_attr=item.get("name"),
             test_id=item.get("testid"), title=item.get("title"), css_selector=item.get("css"),

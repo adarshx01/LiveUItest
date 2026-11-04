@@ -125,6 +125,27 @@ def catalogue_scenarios() -> list[Scenario]:
         Scenario("one-time code from the vault", "otp_verification.md", "PASSED", ["otp-input", "otp-submit"], [],
                  secrets={"otp_code": "246810"},
                  capability="secret typed into a non-password field, masked in screenshots and reports"),
+        Scenario("OS-rendered native controls", "native_controls.md", "PASSED",
+                 ["ctl-country", "ctl-city", "ctl-languages", "ctl-browser", "ctl-date", "ctl-time", "ctl-color",
+                  "ctl-budget", "ctl-travellers", "ctl-submit"], [],
+                 capability="native select + optgroups, async dependent select, multi-select, datalist, "
+                            "date/time/color/range/number pickers"),
+        Scenario("custom dropdown zoo", "custom_dropdowns.md", "PASSED",
+                 ["dd-priority-option", "dd-timezone-option", "dd-assignee-option", "dd-department-option",
+                  "dd-tags-option", "dd-plan-option", "dd-export-csv"], ["dd-export-pdf"],
+                 capability="portal listbox, search-as-you-type, virtualized list, ARIA-less div dropdown, "
+                            "multi-select chips, hidden native select, nested menu"),
+        Scenario("messy markup + shadow DOM", "messy_soup.md", "PASSED",
+                 ["soup-name", "soup-email", "soup-phone", "soup-zip", "soup-submit", "soup-nl-email", "soup-nl-add"],
+                 ["soup-cancel", "soup-submit-mobile"], options={"auto_approve": True},
+                 capability="unlabeled table form, div buttons, hidden duplicate, web component in shadow DOM"),
+        Scenario("typos and synonyms", "typos_and_synonyms.md", "PASSED",
+                 ["nav-login", "login-username", "login-password", "login-submit"], ["login-forgot", "login-remember"],
+                 secrets={"test_password": "abc"}, demo_config={"ui_version": 1},
+                 capability="misspelt verbs, fields and buttons ('Clik on the Loign button', 'Clcik Sing In')"),
+        Scenario("misspelt dropdown options", "typo_dropdowns.md", "PASSED",
+                 ["ctl-country", "ctl-city", "ctl-languages", "ctl-submit"], [],
+                 capability="'Selct Indai from the contry dropdown' -> India (typo-tolerant option matching)"),
     ]
 
 
@@ -192,4 +213,5 @@ def summarize(results: list[ScenarioResult]) -> dict[str, Any]:
         "average_execution_seconds": round(sum(r.duration_s for r in results) / n, 1),
         "average_llm_cost_usd": round(sum(r.metrics.get("llm_cost_usd", 0.0) for r in results) / n, 4),
         "recoveries": sum(r.metrics.get("recoveries", 0) for r in results),
+        "steps_replayed_directly_from_memory": sum(r.metrics.get("memory_fastpath", 0) for r in results),
     }

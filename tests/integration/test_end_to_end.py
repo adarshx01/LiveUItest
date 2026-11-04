@@ -107,11 +107,13 @@ async def test_login_learn_replay_heal_and_fail(platform):
     r2 = await run_scenario(platform, replay)
     assert r2.outcome == "PASSED", r2.reason
     assert r2.metrics["memory_hits"] >= 3, r2.metrics
+    assert r2.metrics["memory_fastpath"] >= 3, "validated memory must replay directly on the same page"
     await _assert_secret_not_leaked(platform, r2, replay.secrets["test_password"])
 
     r3 = await run_scenario(platform, changed)
     assert r3.outcome == "PASSED", r3.reason
     assert r3.metrics["recovered_steps"] >= 1, "UI change must be detected and reported as recovery"
+    assert r3.metrics["memory_fastpath"] <= 1, "changed controls must not be replayed from stale memory"
     assert not r3.wrong_touches, f"decoy operated: {r3.wrong_touches}"
     await _assert_secret_not_leaked(platform, r3, changed.secrets["test_password"])
 

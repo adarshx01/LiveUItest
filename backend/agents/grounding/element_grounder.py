@@ -9,12 +9,22 @@ drives the execute / enhanced-verify / refine / ask-human decision.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from backend.agents.grounding.locator_strategy import LocatorStrategy, StrategyResolution, resolve_strategy
-from backend.agents.grounding.text_match import similarity, split_identifier, strip_badge
-from backend.agents.planner.lexicon import ACTION_ROLE_COMPAT, normalize_text, purpose_compatible
+from backend.agents.grounding.fuzzy import explain_match, match_score
+from backend.agents.grounding.locator_strategy import (
+    LocatorStrategy,
+    StrategyResolution,
+    resolve_strategy,
+)
+from backend.agents.grounding.text_match import split_identifier, strip_badge
+from backend.agents.planner.lexicon import (
+    ACTION_ROLE_COMPAT,
+    normalize_text,
+    purpose_compatible,
+)
 from backend.core.config import ConfidenceThresholds, get_settings
 from backend.dsl.models import ActionType, Step, TargetSpec
 from backend.dsl.observation import InventoryElement, Observation
@@ -86,13 +96,18 @@ def _element_texts(el: InventoryElement) -> list[tuple[str, float]]:
         if core != el.name:
             texts.append((core, 0.97))
     if el.label and el.label != el.name:
-        texts.append((el.label, 0.97))
+        texts.append((el.label, 0.93 if el.label_inferred else 0.97))
     if el.placeholder:
         texts.append((el.placeholder, 0.9))
     if el.title and el.title != el.name:
         texts.append((el.title, 0.88))
     if el.text and el.role not in EDITABLE_ROLES and el.text != el.name and len(el.text) < 120:
         texts.append((el.text, 0.85))
+    for shown in (el.name, el.text):
+        prompt = PROMPT_RE.match(shown or "")
+        if prompt and prompt.group("field"):
+            texts.append((prompt.group("field"), 0.92))  # "Select department" names the Department field
+            break
     for ident, weight in ((el.test_id, 0.72), (el.dom_id, 0.66), (el.name_attr, 0.66)):
         words = split_identifier(ident)
         if words:
@@ -111,11 +126,16 @@ def name_score(target: TargetSpec, el: InventoryElement) -> tuple[float, str]:
         visible_name = (el.name or el.text or "").strip()
         if visible_name and normalize_text(visible_name) == normalize_text(target.exact_name):
             return 1.0, f"name equals '{target.exact_name}'"
+    best_pair = ("", "")
     for phrase, pw in _target_phrases(target):
         for text, tw in _element_texts(el):
-            s = similarity(phrase, text) * pw * tw
+            s = match_score(phrase, text) * pw * tw
             if s > best:
-                best, why = s, f"'{phrase}' ~ '{text[:40]}' ({s:.2f})"
+                best, why, best_pair = s, f"'{phrase}' ~ '{text[:40]}' ({s:.2f})", (phrase, text)
+    if best_pair[0]:
+        repaired = explain_match(*best_pair)
+        if repaired:
+            why += f" [{repaired}]"
     return round(best, 4), why
 
 
@@ -135,16 +155,58 @@ def _is_specific(target: TargetSpec) -> bool:
     return len(intent_tokens) > 1
 
 
+NON_TEXT_INPUTS = {"checkbox", "radio", "submit", "button", "image", "file", "reset", "hidden"}
+PROMPT_RE = re.compile(r"^\s*(?:-+\s*)?(?:please\s+)?(?:select|choose|pick)\s+(?:an?\s+|your\s+|the\s+)?(?P<field>[\w /&-]{2,40}?)"
+                       r"\s*(?:-+|\.\.\.|…)?\s*$", re.IGNORECASE)
+DROPDOWN_CLASS_RE = re.compile(r"(^|[\s_-])(select|dropdown|dd|picker|combo)([\s_-]|$)", re.IGNORECASE)
+
+
+BUTTON_CLASS_RE = re.compile(r"(^|[\s_-])(btn|button|cta|action|link)([\s_-]|$)", re.IGNORECASE)
+
+
+def looks_like_button(el: InventoryElement) -> bool:
+    """A clickable, role-less element whose short own text reads like a command."""
+
+    if not el.clickable_hint or el.role not in ("generic", "listitem", "cell", "paragraph", "img", "strong",
+                                                 "emphasis", "text"):
+        return False
+    words = (el.text or el.name or "").split()
+    return 0 < len(words) <= 5 or bool(BUTTON_CLASS_RE.search(el.classes or ""))
+
+
+def looks_like_dropdown(el: InventoryElement) -> bool:
+    return bool(el.haspopup or el.controls or DROPDOWN_CLASS_RE.search(el.classes or "")
+                or PROMPT_RE.match(el.text or el.name or ""))
+
+
+def is_fillable(el: InventoryElement) -> bool:
+    """Text fields, but also browser-rendered pickers (date, time, color, range, number) and editable regions."""
+
+    if el.role in EDITABLE_ROLES or el.editable:
+        return True
+    return el.tag in ("input", "textarea") and (el.input_type or "text").lower() not in NON_TEXT_INPUTS
+
+
 def _role_score(target: TargetSpec, el: InventoryElement, action: str) -> float:
+    if action in ("fill", "type", "clear") and el.role not in EDITABLE_ROLES and is_fillable(el):
+        return 0.85  # slider / color well / date picker exposed with a non-textbox role
+    if action == "select" and el.tag == "input" and is_fillable(el) and el.role not in ("combobox",):
+        return 0.6  # "set <field> to <value>" parsed as a choice
     roles = target.preferred_roles or []
     if roles and el.role == roles[0]:
         return 1.0
+    if action == "select" and el.clickable_hint and looks_like_dropdown(el):
+        return 0.8  # an ARIA-less dropdown trigger ("div soup")
+    if action in ("click", "double_click") and looks_like_button(el):
+        return 0.8  # <div onclick> / <span class="btn"> acting as a button
     if el.role in roles:
         return 0.85
     if el.role in ACTION_ROLE_COMPAT.get(action, ()):
         return 0.55
-    if el.clickable_hint and action in ("click", "hover", "drag"):
+    if el.clickable_hint and action in ("click", "hover", "drag", "select"):
         return 0.45
+    if action == "select" and (el.haspopup or el.controls):
+        return 0.6  # a trigger that declares the popup it opens
     if action in ("drop", "hover") and el.role in ("region", "list", "group", "generic", "listitem", "article"):
         return 0.5
     return 0.0
@@ -158,7 +220,7 @@ def _context_score(target: TargetSpec, el: InventoryElement, ctx: GroundingConte
     if target.context_hint:
         fields = [c.form_name, c.dialog_name, c.section_heading, c.landmark_name, c.landmark, c.fieldset_legend,
                   c.row_text, *(c.ancestors or [])]
-        best = max((similarity(target.context_hint, f) for f in fields if f), default=0.0)
+        best = max((match_score(target.context_hint, f) for f in fields if f), default=0.0)
         if best >= 0.5:
             score = 0.6 + 0.4 * best
             notes.append(f"context '{target.context_hint}' matched ({best:.2f})")
@@ -172,6 +234,16 @@ def _context_score(target: TargetSpec, el: InventoryElement, ctx: GroundingConte
         elif c.form_ref and action == "click" and target.purpose in SUBMIT_PURPOSES:
             score = min(score, 0.35)
             notes.append("different form than previous step")
+    prev = ctx.previous_element
+    if prev is not None and action in ("fill", "type", "select", "check", "uncheck", "clear") and is_fillable(prev) \
+            and not target.context_hint:
+        mine, theirs = group_key(el), group_key(prev)
+        if theirs and mine == theirs:
+            score = max(score, 0.9)
+            notes.append("same group as the field of the previous step")
+        elif theirs and mine != theirs:
+            score = min(score, 0.4)
+            notes.append("different group than the field of the previous step")
     if (target.purpose in SUBMIT_PURPOSES or target.purpose in ("username_or_email", "password", "email")) \
             and c.form_ref:
         score += 0.1
@@ -192,6 +264,23 @@ def _context_score(target: TargetSpec, el: InventoryElement, ctx: GroundingConte
     return max(0.0, min(1.0, score)), notes
 
 
+def group_key(el: InventoryElement) -> str | None:
+    """The visual/structural group a field belongs to: form, dialog, table-built form or web component."""
+
+    c = el.context
+    if c.form_ref:
+        return f"form:{c.form_ref}"
+    if c.form_name:
+        return f"form:{c.form_name}"
+    if c.dialog_ref:
+        return f"dialog:{c.dialog_ref}"
+    if c.list_ref and el.role in EDITABLE_ROLES | TOGGLE_ROLES:
+        return f"list:{c.list_ref}"
+    if el.in_shadow_dom:
+        return f"component:{c.section_heading or c.landmark_name or ''}"
+    return None
+
+
 def _state_score(el: InventoryElement) -> float:
     if not el.visible:
         return 0.1
@@ -209,17 +298,30 @@ def _option_score(target: TargetSpec, el: InventoryElement, step: Step) -> float
     if not option or step.action != ActionType.SELECT:
         return None
     norm_opt = normalize_text(option)
-    if el.options:
-        norms = [normalize_text(o) for o in el.options]
-        if norm_opt in norms:
+    offered = el.option_details or el.options or el.datalist
+    if offered:
+        from backend.agents.forms.option_matcher import (
+            OptionInfo,
+            match_option,
+            split_choices,
+        )
+
+        if not el.enabled or all(o.is_placeholder or "loading" in o.label.lower() for o in OptionInfo.coerce(offered)):
+            return None  # a dependent list still loading ("Loading...", disabled): no evidence either way
+
+        wanted = split_choices(option, offered) if el.multiple else [option]
+        found = [match_option(offered, w) for w in wanted]
+        if all(m.found and m.how in ("exact", "case_insensitive", "normalized", "value") for m in found):
             return 1.0
-        if any(norm_opt in o or o in norm_opt for o in norms if o):
-            return 0.75
+        if all(m.found for m in found):
+            return 0.88 if all(m.how != "fuzzy" for m in found) else 0.82
         return 0.05
     if el.role in ("radio", "tab", "button", "option", "menuitemradio") and normalize_text(el.name) == norm_opt:
         return 1.0
-    if el.role in ("combobox", "listbox"):
+    if el.role in ("combobox", "listbox") or looks_like_dropdown(el):
         return None  # custom/lazy dropdown: options only appear after opening, so no evidence either way
+    if is_fillable(el):
+        return None  # "set <input> to <value>": a value, not a list choice
     return 0.1
 
 
@@ -228,7 +330,7 @@ def _visual_score(target: TargetSpec, el: InventoryElement) -> float | None:
         return None
     words = [t[5:] for t in el.nearby_text if t.startswith("icon:")] + [el.classes or "", el.title or "",
                                                                        el.name or "", el.text or ""]
-    best = max((similarity(target.visual_hint, w) for w in words if w), default=0.0)
+    best = max((match_score(target.visual_hint, w) for w in words if w), default=0.0)
     if el.role == "canvas" and any(r == "canvas" for r in target.preferred_roles):
         best = max(best, 0.7)
     return best
@@ -238,11 +340,14 @@ def _hard_excluded(step: Step, target: TargetSpec, el: InventoryElement, action:
                    ctx: GroundingContext) -> str | None:
     if element_key(el) in ctx.excluded_keys:
         return "excluded by healing"
-    if el.role == "option" and step.action != ActionType.SELECT:
-        return "option inside closed list"
-    if not el.visible and not ctx.allow_hidden:
+    native_option = el.role == "option" and el.context.owner_role == "combobox"
+    if el.role == "option" and not native_option and not el.visible:
+        return "option inside a closed list"
+    if el.role == "option" and native_option and step.action != ActionType.CLICK:
+        return "option of a native select (the select itself is the target)"
+    if not el.visible and not ctx.allow_hidden and not native_option:
         return "not visible"
-    if action in ("fill", "type", "clear") and el.role not in EDITABLE_ROLES and not el.editable:
+    if action in ("fill", "type", "clear") and not is_fillable(el):
         return "not editable"
     if target.input_type == "password" and action in ("fill", "type") and el.input_type not in (None, "password"):
         return "not a password field"
@@ -384,7 +489,13 @@ class ElementGrounder:
                 for c in scored:
                     if c.element.context.landmark in ("banner", "navigation", "contentinfo") and not target.context_hint:
                         c.features["context"] = max(0.0, c.features["context"] - 0.3)
-                        c.evidence.append(f"header/footer control while a main-content match exists")
+                        c.evidence.append("header/footer control while a main-content match exists")
+        best_identity = max((c.features["identity"] for c in scored), default=0.0)
+        for c in scored:
+            if c.memory_quality > 0 and c.features["identity"] < best_identity - 0.15:
+                # memory may confirm a live match, never overrule a clearly better one
+                c.memory_quality, c.memory_id = 0.0, None
+                c.evidence.append("remembered target ignored: a clearly better live match exists")
         for c in scored:
             f = c.features
             weights = {"identity": 0.56, "role": 0.12, "context": 0.14, "state": 0.12}
@@ -418,10 +529,21 @@ class ElementGrounder:
         margin = top.raw - (second.raw if second else 0.0)
         separation = min(1.0, max(0.0, margin) / 0.25)
         confidence = top.raw * (0.6 + 0.4 * separation)
+        context_resolved = bool(second and not ordinal_applied
+                                and abs(top.features.get("identity", 0) - second.features.get("identity", 0)) <= 0.1
+                                and top.features.get("context", 0) >= 0.85 and second.features.get("context", 1) <= 0.4)
         if ordinal_applied:
             confidence = max(confidence, top.raw * 0.95)
+        elif context_resolved:
+            # equally good matches, one in the group the test is working in: context decides (like an ordinal)
+            confidence = max(confidence, top.raw * 0.9)
+            top.evidence.append("ambiguity resolved by context: same group as the previous step")
         elif margin >= 0.4 and top.features.get("identity", 0) >= 0.75:
             confidence += (1 - confidence) * 0.35  # the only plausible match on the page
+        elif top.features.get("name", 0) >= 0.94 and top.features.get("identity", 0) >= 0.9 and (
+                second is None or second.features.get("name", 0) <= top.features.get("name", 0) - 0.15):
+            confidence += (1 - confidence) * 0.5  # the only element whose label says exactly what the test says
+            top.evidence.append("unique exact label match")
         if top.memory_quality > 0:
             confidence = min(0.995, confidence + (1 - confidence) * 0.6 * top.memory_quality)
         elif memory_res and any(not r.ambiguous and r.element is not None and r.quality > 0.8 for r, _, _ in memory_res):

@@ -12,7 +12,12 @@ from typing import Any, Literal
 
 from backend.agents.grounding.locator_strategy import LocatorStrategy, resolve_strategy
 from backend.agents.grounding.text_match import similarity
-from backend.browser.js_probes import ELEMENT_STATE, VALUE_FINGERPRINT, fnv1a
+from backend.browser.js_probes import (
+    ELEMENT_STATE,
+    SELECT_STATE,
+    VALUE_FINGERPRINT,
+    fnv1a,
+)
 from backend.browser.tool_adapter import BrowserToolAdapter
 from backend.dsl.models import ActionType, Step
 from backend.dsl.observation import InventoryElement, Observation
@@ -97,7 +102,8 @@ class ActionVerifier:
             checks.append({"check": "already_in_state", "ok": True, "detail": outcome.notes})
             return result("verified", "control already in the requested state")
 
-        if action in (ActionType.FILL, ActionType.TYPE, ActionType.CLEAR) and expected.get("kind") is None:
+        typed_value = expected.get("value") is not None and expected.get("selected_option") is None
+        if (action in (ActionType.FILL, ActionType.TYPE, ActionType.CLEAR) or typed_value) and expected.get("kind") is None:
             el = self.relocate(element, before, after)
             if el is None or not el.ref:
                 checks.append({"check": "field_located", "ok": False})
@@ -116,25 +122,36 @@ class ActionVerifier:
                 return result("failed", "field does not contain the entered value", FailureCategory.VERIFICATION_FAILED)
             return result("verified", "field contains the entered value")
 
+        if expected.get("kind") == "menu":
+            checks.append({"check": "menu_path", "ok": True, "detail": expected.get("menu_path")})
+            return result("verified", f"menu path {' > '.join(expected.get('menu_path') or [])} activated")
+
         if action == ActionType.SELECT or expected.get("selected_option") is not None:
             option = str(expected.get("selected_option", ""))
+            wanted = [str(o) for o in (expected.get("selected_list") or [option])]
             kind = expected.get("kind")
             el = self.relocate(element, before, after)
-            if kind in ("radio", "checkbox", "switch", "menuitemradio"):
+            selected: list[str] = []
+            if kind == "native" and expected.get("owner_target"):
+                # read the live <select>: the snapshot can lag behind a change event
+                state = await self.adapter.probe(SELECT_STATE, str(expected["owner_target"]), "native select") or {}
+                selected = [str(s) for s in state.get("selected") or []]
+                ok = bool(state.get("isSelect")) and all(any(similarity(w, s) >= 0.95 for s in selected)
+                                                         for w in wanted)
+            elif kind == "custom" and expected.get("confirmed"):
+                ok = True  # the engine saw every chosen option marked selected before closing the list
+                selected = wanted
+            elif kind in ("radio", "checkbox", "switch", "menuitemradio"):
                 ok = bool(el and el.checked)
             elif kind in ("tab", "button", "option"):
                 ok = changed
             elif el is not None and el.options:
-                ok = any(similarity(option, s) >= 0.95 for s in el.selected_options)
+                selected = list(el.selected_options)
+                ok = all(any(similarity(w, s) >= 0.95 for s in selected) for w in wanted)
             else:
-                shown = " ".join(filter(None, [el.name, el.text, el.value_preview])) if el else ""
-                ok = bool(el) and (option.lower() in shown.lower())
-                if not ok and el is None:
-                    trigger = expected.get("trigger")
-                    ok = any(option.lower() in (e.text or e.name or "").lower() for e in after.elements
-                             if e.role == "combobox" and (not trigger or e.name == trigger or e.text == option))
-            checks.append({"check": "option_selected", "ok": ok, "detail": {"expected": option,
-                                                                           "selected": el.selected_options if el else None}})
+                ok = all(_custom_selected(w, el, after, expected) for w in wanted)
+            checks.append({"check": "option_selected", "ok": ok,
+                           "detail": {"expected": wanted, "selected": selected or (el.selected_options if el else None)}})
             if not ok:
                 return result("failed", f"option '{option}' is not selected", FailureCategory.VERIFICATION_FAILED)
             return result("verified", f"'{option}' selected")
@@ -231,3 +248,36 @@ class ActionVerifier:
                       ActionType.SWITCH_FRAME):
             return result("verified", "")
         return result("verified" if outcome.ok else "unverified", "")
+
+
+def _custom_selected(option: str, trigger: InventoryElement | None, after: Observation,
+                     expected: dict[str, Any]) -> bool:
+    """A custom dropdown shows its selection in one of a few ways; any reliable one is enough."""
+
+    low = option.lower()
+    if trigger is not None:
+        shown = " ".join(filter(None, [trigger.name, trigger.text, trigger.value_preview, trigger.label]))
+        if low in shown.lower():
+            return True
+    name = expected.get("trigger")
+    for e in after.elements:
+        if e.role == "option" and e.selected and (e.name or e.text).lower() == low:
+            return True  # listbox still open with aria-selected
+        if e.role in ("combobox", "button", "listbox", "generic", "textbox") and \
+                (not name or name in (e.name, e.label, e.text) or (e.value_preview or "").lower() == low) and \
+                low in " ".join(filter(None, [e.name, e.text, e.value_preview])).lower():
+            return True
+    # chips / tags of multi-selects, or the control's own echo of the choice - only right next to the trigger
+    anchor = trigger.bbox if trigger is not None else None
+    if anchor is None:
+        return False
+
+    def near(e: InventoryElement) -> bool:
+        if e.bbox is None:
+            return False
+        dy = max(0.0, max(anchor.y, e.bbox.y) - min(anchor.y + anchor.height, e.bbox.y + e.bbox.height))
+        dx = max(0.0, max(anchor.x, e.bbox.x) - min(anchor.x + anchor.width, e.bbox.x + e.bbox.width))
+        return dy <= 60 and dx <= 40
+
+    return any(low == (e.text or e.name or "").strip().lower() for e in after.elements
+               if e.visible and e.role not in ("option", "menuitem") and near(e))

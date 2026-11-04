@@ -285,6 +285,7 @@ class ReportGenerator:
             b = runtime.budget
             m.retries, m.recoveries = runtime.retries, runtime.recoveries
             m.memory_hits, m.memory_lookups = runtime.memory_hits, runtime.memory_lookups
+            m.memory_fastpath = getattr(runtime, "memory_fastpath", 0)
             m.llm_calls, m.llm_input_tokens, m.llm_output_tokens = b.llm_calls, b.llm_input_tokens, b.llm_output_tokens
             m.llm_cost_usd = round(b.llm_cost_usd, 6)
             m.tool_calls = b.tool_calls
@@ -345,6 +346,7 @@ class ReportGenerator:
             ("Assertions", f"{metrics.assertions_passed}/{metrics.assertions_total}", "#1b2130"),
             ("Retries", metrics.retries, "#1b2130"), ("Recoveries", metrics.recoveries, "#1b2130"),
             ("Memory reuse", f"{metrics.memory_hits}/{metrics.memory_lookups}", "#1b2130"),
+            ("Direct replays", metrics.memory_fastpath, "#1b2130"),
             ("LLM calls", metrics.llm_calls, "#1b2130"), ("Agent cost", f"${metrics.llm_cost_usd:.4f}", "#1b2130"),
             ("Tool calls", metrics.tool_calls, "#1b2130"),
         ]

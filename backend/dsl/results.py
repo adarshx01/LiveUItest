@@ -198,6 +198,7 @@ class ExecutionMetrics(BaseModel):
     retries: int = 0
     recoveries: int = 0
     memory_hits: int = 0
+    memory_fastpath: int = 0  # steps replayed directly from validated memory (no scoring or model call)
     memory_lookups: int = 0
     llm_calls: int = 0
     llm_input_tokens: int = 0

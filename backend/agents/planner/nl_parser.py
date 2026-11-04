@@ -28,6 +28,7 @@ from backend.agents.planner.lexicon import (
     risk_for_text,
     synonyms_for,
 )
+from backend.agents.planner.spelling import correct_instruction
 from backend.dsl.models import (
     ActionType,
     AssertionSpec,
@@ -140,6 +141,19 @@ class StepParser:
         line = clean_line(raw_line)
         if not line:
             return ParsedLine([], 0.0, "empty line")
+        spelling = correct_instruction(line)
+        candidates = [spelling.text, line] if spelling.changed else [line]
+        for attempt in candidates:
+            result = self._parse_line(attempt, raw_line, ctx)
+            if result.steps:
+                if attempt is not line and spelling.changed:
+                    for step in result.steps:
+                        step.notes.append(spelling.note())
+                        step.original_text = line  # the author's words, not the repaired ones
+                return result
+        return ParsedLine([], 0.0, "no rule matched")
+
+    def _parse_line(self, line: str, raw_line: str, ctx: ParseContext) -> ParsedLine:
         if not re.match(r"^if\b", line, re.IGNORECASE):
             compound = self._parse_compound(line, raw_line, ctx)
             if compound is not None:

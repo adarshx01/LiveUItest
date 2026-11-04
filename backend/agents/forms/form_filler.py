@@ -11,7 +11,8 @@ from __future__ import annotations
 from typing import Any
 
 from backend.agents.grounding.element_grounder import ElementGrounder
-from backend.agents.grounding.text_match import similarity, split_identifier
+from backend.agents.grounding.fuzzy import match_score as similarity
+from backend.agents.grounding.text_match import split_identifier
 from backend.agents.planner.lexicon import SENSITIVE_PURPOSES, classify_phrase
 from backend.agents.planner.variable_resolver import VariableResolver
 from backend.dsl.observation import FormInfo, InventoryElement, Observation

@@ -29,12 +29,12 @@ element is highlighted.
 
 | Area | Where | Highlights |
 |---|---|---|
-| NL test intelligence | `backend/agents/planner/` | text / Markdown / JSON / CSV / suites, IF/ELSE blocks, variables & secrets, 31-action DSL with 26 assertion types, assertions as first-class steps, compound sentences, ambiguity reporting (never guessing), optional LLM escalation through a closed schema |
+| NL test intelligence | `backend/agents/planner/` | spelling repair of instructions ("Clik on the Loign button") that never rewrites data, text / Markdown / JSON / CSV / suites, IF/ELSE blocks, variables & secrets, 31-action DSL with 26 assertion types, assertions as first-class steps, compound sentences, ambiguity reporting (never guessing), optional LLM escalation through a closed schema |
 | Browser layer | `backend/browser/` | MCP client (stdio or HTTP), tool allowlist (`browser_run_code_unsafe` blocked, `browser_evaluate` restricted to platform probes, page-registered WebMCP tools disabled), schema validation, timeouts, budgets, redacted audit log, isolated per-execution contexts, version pinning |
-| Observation | `backend/agents/observation/` | aria snapshot parser, DOM ↔ snapshot correlation by bounding box, semantic classifier, forms/dialogs/landmarks/sections, route-normalized page fingerprints, CAPTCHA / error / overlay / injection signals |
-| Grounding | `backend/agents/grounding/` | contextual scoring (identity, role, context, state, type, option, visual, memory), ambiguity margins, ordinals/positions, calibrated confidence → execute / enhanced verification / refine / ask human; ref-free `LocatorStrategy` with validated Playwright selectors |
+| Observation | `backend/agents/observation/` | shadow-DOM-piercing DOM probe, labels inferred from surrounding text and table layouts, role-less clickable "div soup", aria snapshot parser, DOM ↔ snapshot correlation by bounding box, semantic classifier, forms/dialogs/landmarks/sections, route-normalized page fingerprints, CAPTCHA / error / overlay / injection signals |
+| Grounding | `backend/agents/grounding/` | contextual scoring (identity, role, context, state, type, option, visual, memory), typo/synonym/abbreviation-tolerant matching (`fuzzy.py`, never for assertions), form-flow context, ambiguity margins, ordinals/positions, calibrated confidence → execute / enhanced verification / refine / ask human; ref-free `LocatorStrategy` with validated Playwright selectors; memory fast path |
 | Visual | `backend/agents/visual/` | colour/shape segmentation of canvas surfaces with safe click points, set-of-marks prompting for vision models, annotated evidence screenshots |
-| Execution | `backend/execution/` | native & custom dropdowns, autocomplete, toggles (idempotent), uploads staged in the session workspace, downloads, drag-and-drop, scrolling/infinite lists, tabs, iframes, native & DOM dialogs |
+| Execution | `backend/execution/` | dropdown engine (`dropdown.py`): native OS-rendered selects via live option lists (values, optgroups, disabled, async dependent lists, multi-select), datalists, date/time/color/range pickers with value normalization, custom dropdowns (portals, search-as-you-type, virtualized lists, ARIA-less div menus, multi-select chips, nested menus); toggles (idempotent), uploads, downloads, drag-and-drop, scrolling/infinite lists, tabs, iframes, native & DOM dialogs |
 | Verification | `backend/agents/verification/` | per-action postconditions, assertion engine (expected vs actual + evidence), independent oracle: PASSED / FAILED / BLOCKED / INCONCLUSIVE |
 | Recovery | `backend/agents/recovery/`, `runtime.py` | failure taxonomy (spec 17.1), bounded strategies, idempotency checks before retrying non-idempotent actions, healing validation, product failures never healed |
 | Governance | `backend/agents/governance/` | domain allowlist + post-redirect checks, risk classes, approvals, CAPTCHA hand-off, sensitive-value placement rule, confidence gates, Fernet-encrypted secret store, redaction everywhere |
@@ -83,7 +83,15 @@ workers, the Playwright MCP browser worker (HTTP transport), the UI and the demo
   isolated browser contexts (data-driven + parallel runners).
 * `examples/` — test cases for forms, dialogs, tabs, iframes, files, drag-and-drop, canvas, dynamic
   content, autocomplete, mobile layout, slow navigation, a one-time code from the secret vault
-  (masked in screenshots and reports), prompt injection, a broken checkout and validation failures.
+  (masked in screenshots and reports), prompt injection, a broken checkout and validation failures,
+  plus:
+  * `native_controls.md` — OS/browser-rendered controls: native select with optgroups, async
+    dependent select, multi-select, datalist, date/time/color/range/number pickers;
+  * `custom_dropdowns.md` — portal listbox, search-as-you-type, 400-row virtualized list, ARIA-less
+    div dropdown, multi-select chips, hidden native select behind a custom UI, nested menu;
+  * `messy_soup.md` — unlabeled table form, `div` buttons, hidden duplicate, shadow-DOM web component;
+  * `typos_and_synonyms.md`, `typo_dropdowns.md` — "Clik on the Loign button", "Clcik Sing In",
+    "Selct Indai from the contry dropdown".
 * [`docs/sample-reports/`](docs/sample-reports/) — generated reports, refreshed by `demo_e2e.py`: a
   first run, the UI-change run (stale memory detected, re-grounded, recovery recorded), a failed
   broken-checkout run, and a one-time-code run showing secrets masked in code, text and screenshots.

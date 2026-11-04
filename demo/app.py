@@ -213,6 +213,21 @@ async def challenge_verify(request: Request, next_url: str = Form("/")) -> Respo
     return response
 
 
+@app.get("/controls", response_class=HTMLResponse)
+async def controls_page(request: Request) -> HTMLResponse:
+    return render("controls.html", request)
+
+
+@app.get("/dropdowns", response_class=HTMLResponse)
+async def dropdowns_page(request: Request) -> HTMLResponse:
+    return render("dropdowns.html", request)
+
+
+@app.get("/soup", response_class=HTMLResponse)
+async def soup_page(request: Request) -> HTMLResponse:
+    return render("soup.html", request)
+
+
 OTP_CODE = "246810"
 
 

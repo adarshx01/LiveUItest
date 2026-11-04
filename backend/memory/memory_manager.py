@@ -23,7 +23,7 @@ from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.agents.grounding.locator_strategy import LocatorStrategy
-from backend.agents.planner.lexicon import normalize_text
+from backend.agents.planner.lexicon import STOPWORDS, normalize_text
 from backend.core.ids import new_id, stable_hash
 from backend.core.logging import get_logger
 from backend.dsl.models import Step
@@ -90,6 +90,19 @@ def action_signature(step: Step) -> str:
     if target is None:
         return step.action.value
     key = target.purpose or normalize_text(target.exact_name or target.intent)[:60]
+    if target.purpose:
+        # words that distinguish this step from other steps with the same purpose ("newsletter email" vs
+        # "email"): without them two different fields of one test would share a remembered locator
+        from backend.agents.planner.lexicon import KIND_ROLES, PURPOSES
+
+        purpose_words = {w for p in PURPOSES[target.purpose].phrases for w in normalize_text(p).split()} \
+            if target.purpose in PURPOSES else set()
+        kind_words = {w for k in KIND_ROLES for w in normalize_text(k).split()} | {
+            "page", "screen", "view", "section", "area", "here", "now", "again"}
+        qualifier = [w for w in normalize_text(target.intent).split()
+                     if w not in purpose_words and w not in kind_words and w not in STOPWORDS and len(w) > 1]
+        if qualifier:
+            key = f"{key}+{'-'.join(qualifier[:4])}"
     name = normalize_text(target.exact_name or "")[:40]
     option = "option" if target.option_text else ""
     return ":".join(filter(None, [step.action.value, key, name, option]))
