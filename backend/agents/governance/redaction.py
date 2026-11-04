@@ -15,11 +15,18 @@ from typing import Any
 
 MASK = "••••••"
 
-_SENSITIVE_KEY = re.compile(
-    r"(pass(word|wd|code)?|pwd|secret|token|api[-_]?key|authorization|cookie|session[-_]?id|"
-    r"credit[-_]?card|card[-_]?number|cvv|cvc|ssn|\bpin\b|otp|private[-_]?key|access[-_]?key)",
-    re.IGNORECASE,
-)
+# Key names are split into words ("llm_input_tokens" -> llm/input/tokens, "apiKey" -> api/key) so that
+# credential-shaped names are masked while counters such as "passed_steps" or "llm_input_tokens" are not.
+_SENSITIVE_WORDS = frozenset({"password", "passwd", "passcode", "passphrase", "pass", "pwd", "secret", "token",
+                              "authorization", "cookie", "cvv", "cvc", "ssn", "pin", "otp", "credential",
+                              "credentials", "mfa", "totp"})
+_SENSITIVE_PAIRS = frozenset({("api", "key"), ("private", "key"), ("access", "key"), ("secret", "key"),
+                              ("session", "id"), ("card", "number"), ("credit", "card"), ("security", "code"),
+                              ("one", "time")})
+# words that are unambiguous even inside an unsplittable key ("userpassword", "accesstoken")
+_SENSITIVE_INFIXES = ("password", "passwd", "passcode", "passphrase", "secret", "authorization", "apikey",
+                      "privatekey", "accesskey", "sessionid", "cardnumber", "creditcard")
+_SENSITIVE_SUFFIXES = ("token", "cookie")
 
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?i)\bbearer\s+[a-z0-9._\-~+/]+=*"), "Bearer " + MASK),
@@ -49,6 +56,21 @@ def clear_sensitive_registry() -> None:
         _sensitive_values.clear()
 
 
+def mask_values(text: str, values: list[str] | tuple[str, ...] | set[str]) -> str:
+    """Mask the given concrete values (longest first) wherever they appear in ``text``."""
+
+    if not text:
+        return text
+    for value in sorted({v for v in values if v}, key=len, reverse=True):
+        if len(value) >= 3:
+            text = text.replace(value, MASK)
+        else:
+            # very short secrets are only masked when quoted, to avoid destroying unrelated text
+            for quote in ("'", '"', "`", "&#39;", "&#34;", "&quot;"):
+                text = text.replace(f"{quote}{value}{quote}", f"{quote}{MASK}{quote}")
+    return text
+
+
 def _luhn_valid(digits: str) -> bool:
     total, alt = 0, False
     for ch in reversed(digits):
@@ -66,14 +88,8 @@ def redact_text(text: str) -> str:
     if not text:
         return text
     with _lock:
-        values = sorted(_sensitive_values, key=len, reverse=True)
-    for value in values:
-        if len(value) >= 3:
-            text = text.replace(value, MASK)
-        else:
-            # very short secrets are only masked when quoted, to avoid destroying unrelated text
-            for quote in ("'", '"', "`"):
-                text = text.replace(f"{quote}{value}{quote}", f"{quote}{MASK}{quote}")
+        values = set(_sensitive_values)
+    text = mask_values(text, values)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
 
@@ -92,7 +108,8 @@ def redact_value(value: Any, *, _depth: int = 0) -> Any:
     if isinstance(value, dict):
         out: dict[Any, Any] = {}
         for key, item in value.items():
-            if isinstance(key, str) and _SENSITIVE_KEY.search(key) and isinstance(item, (str, int, float)) and item != "":
+            if (isinstance(key, str) and is_sensitive_name(key) and isinstance(item, (str, int, float))
+                    and not isinstance(item, bool) and item != ""):
                 out[key] = MASK
             else:
                 out[key] = redact_value(item, _depth=_depth + 1)
@@ -102,5 +119,47 @@ def redact_value(value: Any, *, _depth: int = 0) -> Any:
     return value
 
 
+def _name_words(name: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).lower())
+
+
 def is_sensitive_name(name: str | None) -> bool:
-    return bool(name and _SENSITIVE_KEY.search(name))
+    """True for credential-shaped names: ``test_password``, ``apiKey``, ``X-Auth-Token``, ``otp_code``..."""
+
+    if not name:
+        return False
+    words = _name_words(name)
+    if any(w in _SENSITIVE_WORDS for w in words) or any(p in _SENSITIVE_PAIRS for p in zip(words, words[1:])):
+        return True
+    joined = "".join(words)
+    return any(i in joined for i in _SENSITIVE_INFIXES) or joined.endswith(_SENSITIVE_SUFFIXES)
+
+
+_DATA_URI = re.compile(r"data:[a-z]+/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+
+
+def redact_html(document: str) -> str:
+    """Final redaction pass over rendered HTML.
+
+    Embedded ``data:`` images are left byte-for-byte intact (masking inside base64 would corrupt them), and
+    secret values are matched both raw and HTML-escaped (``a&b`` renders as ``a&amp;b``).
+    """
+
+    import html as _html
+
+    with _lock:
+        values = set(_sensitive_values)
+    escaped = {_html.escape(v, quote=True) for v in values} | {_html.escape(v, quote=False) for v in values}
+    variants = values | escaped
+
+    def clean(segment: str) -> str:
+        return redact_text(mask_values(segment, variants))
+
+    out: list[str] = []
+    last = 0
+    for match in _DATA_URI.finditer(document):
+        out.append(clean(document[last:match.start()]))
+        out.append(match.group(0))
+        last = match.end()
+    out.append(clean(document[last:]))
+    return "".join(out)

@@ -30,9 +30,11 @@ export default function TestDetail({ params }: { params: Promise<{ id: string }>
       <section className="card">
         <h2 style={{ marginTop: 0 }}>History {flaky && <span className="pill">outcomes vary across runs (possible flakiness)</span>}</h2>
         <div className="row" style={{ marginBottom: 8 }}>{runs.slice().reverse().map((r) => <a key={r.id} href={`/executions/${r.id}`} title={r.id}><StatusBadge status={r.outcome ?? r.status} /></a>)}</div>
-        <table><thead><tr><th>Execution</th><th>Outcome</th><th>Recovered</th><th>Memory</th></tr></thead><tbody>
-          {runs.map((r) => <tr key={r.id}><td><a href={`/executions/${r.id}`}>{r.id}</a></td><td><StatusBadge status={r.outcome ?? r.status} /></td>
-            <td>{r.metrics?.recovered_steps ?? 0}</td><td>{r.metrics?.memory_hits ?? 0}/{r.metrics?.memory_lookups ?? 0}</td></tr>)}
+        <table><thead><tr><th>Execution</th><th>Outcome</th><th>Recovered</th><th>Memory</th><th></th></tr></thead><tbody>
+          {runs.map((r, i) => <tr key={r.id}><td><a href={`/executions/${r.id}`}>{r.id}</a>{r.scope && <span className="pill">partial</span>}</td>
+            <td><StatusBadge status={r.outcome ?? r.status} /></td>
+            <td>{r.metrics?.recovered_steps ?? 0}</td><td>{r.metrics?.memory_hits ?? 0}/{r.metrics?.memory_lookups ?? 0}</td>
+            <td>{runs[i + 1] && <a href={`/compare?base=${runs[i + 1].id}&other=${r.id}`}>compare with previous</a>}</td></tr>)}
         </tbody></table>
       </section>
     </div>

@@ -10,14 +10,29 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 
+from backend.agents.planner.step_scope import StepScope
 from backend.api.deps import PlatformDep, Principal, PrincipalDep, principal
-from backend.api.schemas import ApprovalDecision, ExecutionCreate, HumanBrowserAction, ResumeRequest, SuiteRun
+from backend.api.schemas import (
+    ApprovalDecision,
+    ExecutionCreate,
+    HumanBrowserAction,
+    ResumeRequest,
+    StepRerun,
+    SuiteRun,
+)
 from backend.bootstrap import Platform
 from backend.core.exceptions import NotFound
 from backend.core.security import verify_api_key
 from backend.execution.events import event_bus
 from backend.execution.runtime import runtime_registry
-from backend.models.entities import AgentTrace, Approval, Artifact, BrowserSessionEvent, ExecutionEvent, ExecutionStep
+from backend.models.entities import (
+    AgentTrace,
+    Approval,
+    Artifact,
+    BrowserSessionEvent,
+    ExecutionEvent,
+    ExecutionStep,
+)
 from backend.services.artifact_service import get_artifact_service
 
 router = APIRouter(prefix="/api/v1")
@@ -33,20 +48,21 @@ def _run(run: Any) -> dict[str, Any]:
             "runner": run.runner, "metrics": run.metrics, "flaky": run.flaky, "retry_of": run.retry_of,
             "created_at": run.created_at, "started_at": run.started_at, "finished_at": run.finished_at,
             "report": f"/api/v1/executions/{run.id}/report" if run.report_uri else None,
-            "video": run.video_uri}
+            "video": run.video_uri, "scope": (run.options or {}).get("scope")}
 
 
 @router.post("/executions", status_code=201)
 async def create_execution(body: ExecutionCreate, request: Request, who: Principal = PrincipalDep) -> Any:
     dispatcher = _dispatcher(request)
     datasets = body.datasets or [body.variables]
+    scope = StepScope(tuple(body.step_ids), body.with_prerequisites) if body.step_ids else None
     runs = []
     try:
         for dataset in datasets:  # data-driven runner: one isolated execution per data set
             runs.append(await dispatcher.start_execution(
                 org_id=who.organization_id, test_case_id=body.test_case_id, version=body.version,
                 variables={**body.variables, **dataset}, options=body.options, allowed_domains=body.allowed_domains,
-                environment_id=body.environment_id, actor=who.actor))
+                environment_id=body.environment_id, actor=who.actor, scope=scope))
     except NotFound as exc:
         raise HTTPException(404, exc.message) from exc
     return _run(runs[0]) if len(runs) == 1 else {"executions": [_run(r) for r in runs]}
@@ -125,10 +141,48 @@ async def resume_execution(execution_id: str, body: ResumeRequest, request: Requ
 async def retry_execution(execution_id: str, request: Request, who: Principal = PrincipalDep,
                           pf: Platform = PlatformDep) -> dict[str, Any]:
     run = await _get_run(pf, who, execution_id)
+    options = dict(run.options or {})
+    scope = StepScope.from_options(options)  # a retried partial run keeps its scope
     new = await _dispatcher(request).start_execution(
-        org_id=who.organization_id, test_case_id=run.test_case_id, version=run.test_case_version, variables={},
-        options=run.options, allowed_domains=[], environment_id=run.environment_id, actor=who.actor, retry_of=run.id)
+        org_id=who.organization_id, test_case_id=run.test_case_id, version=run.test_case_version,
+        variables=options.get("dataset") or {}, sealed_variables=options.get("sealed_dataset"),
+        options={k: v for k, v in options.items() if k != "scope"}, allowed_domains=[],
+        environment_id=run.environment_id, actor=who.actor, retry_of=run.id, scope=scope)
     return _run(new)
+
+
+@router.post("/executions/{execution_id}/rerun-steps", status_code=201)
+async def rerun_steps(execution_id: str, body: StepRerun, request: Request, who: Principal = PrincipalDep,
+                      pf: Platform = PlatformDep) -> dict[str, Any]:
+    """Re-run individual steps of an execution's test version with the same data set (spec section 20)."""
+
+    run = await _get_run(pf, who, execution_id)
+    options = {k: v for k, v in (run.options or {}).items() if k != "scope"}
+    scope = StepScope(tuple(body.step_ids), body.with_prerequisites, rerun_of=run.id)
+    new = await _dispatcher(request).start_execution(
+        org_id=who.organization_id, test_case_id=run.test_case_id, version=run.test_case_version,
+        variables=options.get("dataset") or {}, sealed_variables=options.get("sealed_dataset"), options=options,
+        allowed_domains=[], environment_id=run.environment_id, actor=who.actor, retry_of=run.id, scope=scope)
+    await _dispatcher(request).audit(who.organization_id, who.actor, "execution.rerun_steps", "execution", new.id,
+                                     {"source": run.id, "step_ids": body.step_ids})
+    return _run(new)
+
+
+@router.get("/executions/{execution_id}/compare/{other_id}")
+async def compare_executions(execution_id: str, other_id: str, who: Principal = PrincipalDep,
+                             pf: Platform = PlatformDep) -> dict[str, Any]:
+    """Step-by-step comparison: ``execution_id`` is the baseline, ``other_id`` the execution compared to it."""
+
+    from backend.services.comparison import compare_executions as compare
+
+    base, other = await _get_run(pf, who, execution_id), await _get_run(pf, who, other_id)
+    async with pf.sessionmaker() as s:
+        steps = {}
+        for run in (base, other):
+            rows = (await s.execute(select(ExecutionStep).where(ExecutionStep.execution_id == run.id)
+                                    .order_by(ExecutionStep.index))).scalars().all()
+            steps[run.id] = [r.result for r in rows]
+    return compare(_run(base), steps[base.id], _run(other), steps[other.id])
 
 
 @router.get("/executions/{execution_id}/steps")

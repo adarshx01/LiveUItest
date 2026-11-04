@@ -21,7 +21,7 @@ from typing import Any
 from jinja2 import Environment, select_autoescape
 from PIL import Image
 
-from backend.agents.governance.redaction import redact_value
+from backend.agents.governance.redaction import redact_html, redact_value
 from backend.core.logging import get_logger
 from backend.dsl.models import TestSpec
 from backend.dsl.results import ExecutionMetrics, StepResult, StepStatus
@@ -77,6 +77,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
   <div><span>Environment:</span> {{ r.environment }}</div>
   <div><span>Browser:</span> {{ r.browser }}</div>
   <div><span>Runner:</span> {{ r.runner }}</div>
+  {% if r.scope %}<div><span>Scope:</span> <span class="warn">partial re-run</span> of steps {{ r.scope.selected|join(", ") }}{% if r.scope.rerun_of %} (from {{ r.scope.rerun_of }}){% endif %}{% if r.scope.prerequisites %}; {{ r.scope.prerequisites|length }} prerequisite step(s) re-run{% endif %}{% if r.scope.not_run %}; {{ r.scope.not_run|length }} step(s) not run{% endif %}</div>{% endif %}
   <div><span>Started:</span> {{ r.started }}</div>
   <div><span>Duration:</span> {{ "%.1f"|format(r.metrics.duration_ms / 1000) }} s</div>
   <div><span>Original strategy:</span> {% if r.original_strategy_succeeded %}<span class="ok">succeeded without recovery</span>{% else %}<span class="warn">{{ r.metrics.recovered_steps }} step(s) required recovery</span>{% endif %}</div>
@@ -201,6 +202,7 @@ class ReportGenerator:
             "security_warnings": runtime.security_warnings if runtime else [],
             "learning": state.get("learning_stats") or {},
             "steps": [s.model_dump(mode="json") for s in steps],
+            "scope": state.get("step_scope"),
             "video": None,
         }
         report = redact_value(report)
@@ -211,7 +213,7 @@ class ReportGenerator:
             report["replay"] = replay_ref.uri
             if runtime is not None and runtime.recorder is not None:
                 await runtime.recorder.artifact(replay_ref, None)
-        html = await self._html(report, steps, runtime, events, metrics)
+        html = redact_html(await self._html(report, steps, runtime, events, metrics))
         html_ref = await self.artifacts.put_bytes(execution_id, "report", "report.html", html.encode("utf-8"),
                                                   "text/html")
         if runtime is not None and runtime.recorder is not None:

@@ -227,6 +227,16 @@ VALUE_FINGERPRINT = Probe("value_fingerprint", "(el) => { " + FNV_JS +
                           " const v = el.value !== undefined ? String(el.value) : (el.innerText || ''); "
                           "return {hash: fnv(v), length: v.length}; }", element=True)
 
+# Renders a field that received a secret (OTP, card number, ...) as discs so no later screenshot shows the
+# value. Purely presentational: the value, events and layout of the application are untouched.
+MASK_SENSITIVE_FIELD = Probe("mask_sensitive_field", r"""(el) => {
+  const css = window.CSS && CSS.supports && CSS.supports('-webkit-text-security', 'disc');
+  if (css) { el.style.setProperty('-webkit-text-security', 'disc', 'important'); }
+  else { el.style.setProperty('color', 'transparent', 'important'); el.style.setProperty('text-shadow', '0 0 0 #000', 'important'); }
+  el.setAttribute('data-aitest-masked', '1');
+  return {masked: true, method: css ? 'text-security' : 'transparent'};
+}""", element=True, mutates_view=True)
+
 SCROLL_INFO = Probe("scroll_info", r"""() => ({scrollX: Math.round(window.scrollX), scrollY: Math.round(window.scrollY),
   docHeight: Math.round(document.documentElement.scrollHeight), vh: window.innerHeight})""")
 
@@ -296,5 +306,6 @@ def scroll_into_view_probe() -> Probe:
 
 
 STATIC_PROBES: dict[str, Probe] = {p.name: p for p in (DOM_INVENTORY, PAGE_SIGNALS, VISIBLE_TEXT, PAGE_INFO,
-                                                        ELEMENT_STATE, VALUE_FINGERPRINT, SCROLL_INFO)}
+                                                        ELEMENT_STATE, VALUE_FINGERPRINT, SCROLL_INFO,
+                                                        MASK_SENSITIVE_FIELD)}
 PROBE_NAMES = set(STATIC_PROBES) | {"find_text", "element_at_point", "scroll_by", "scroll_edge", "scroll_into_view"}

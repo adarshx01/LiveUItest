@@ -15,17 +15,24 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
+from backend.agents.governance.redaction import redact_text
+from backend.agents.governance.secret_manager import SecretScope, unseal_variables
 from backend.agents.planner.lexicon import normalize_text
 from backend.agents.planner.plan_validator import blocking
+from backend.agents.planner.step_scope import StepScope, plan_scope
 from backend.agents.planner.test_ingestion import RawLine, RawTestCase, ingest
-from backend.agents.governance.secret_manager import SecretScope
 from backend.agents.verification.test_oracle import evaluate_outcome
 from backend.core.exceptions import BudgetExceeded, ExecutionCancelled, PlatformError
 from backend.core.logging import get_logger
 from backend.dsl.models import ActionType, Step, TestSpec
 from backend.dsl.results import FailureCategory, StepResult, StepStatus, TestOutcome
 from backend.execution.events import event_bus
-from backend.execution.runtime import ExecutionOptions, ExecutionRequest, ExecutionRuntime, runtime_registry
+from backend.execution.runtime import (
+    ExecutionOptions,
+    ExecutionRequest,
+    ExecutionRuntime,
+    runtime_registry,
+)
 from backend.graph.services import get_graph_services
 from backend.graph.state import TestExecutionState
 from backend.harness.agent_registry import agent_for_node
@@ -96,7 +103,7 @@ def _step(state: TestExecutionState) -> Step:
 
 
 def _results_dict(runtime: ExecutionRuntime) -> dict[str, dict[str, Any]]:
-    return {sid: {"status": r.status.value, "message": r.message[:300], "index": r.index,
+    return {sid: {"status": r.status.value, "message": redact_text(r.message)[:300], "index": r.index,
                   "recovered": r.recovered, "memory_used": r.memory_used}
             for sid, r in runtime.results.items()}
 
@@ -177,20 +184,40 @@ async def compile_test_plan(state: TestExecutionState, config: RunnableConfig | 
         spec = services.compiler.compile(spec)
     compiled = [{"id": s.id, "index": s.index, "action": s.action.value, "text": s.original_text[:200],
                  "summary": s.summary()[:200], "confidence": s.confidence} for s in spec.flat_steps()]
-    return {"phase": "compiled", "test_spec": spec.model_dump(mode="json"), "compiled_steps": compiled,
-            "queue": [s.id for s in spec.steps], "current_step_index": 0}
+    update: dict[str, Any] = {"phase": "compiled", "test_spec": spec.model_dump(mode="json"),
+                              "compiled_steps": compiled, "queue": [s.id for s in spec.steps],
+                              "current_step_index": 0, "step_scope": None}
+    scope = StepScope.from_options((state.get("raw_input") or {}).get("options"))
+    if scope is not None:
+        plan = plan_scope(spec, scope)
+        update["queue"] = plan.queue
+        update["step_scope"] = plan.to_state(scope)
+        await event_bus.publish(state["execution_id"], "PLAN_SCOPED", f"partial re-run: {plan.describe()}",
+                                **update["step_scope"])
+    return update
 
 
 @node("validate_test_plan")
 async def validate_test_plan(state: TestExecutionState, config: RunnableConfig | None = None) -> dict[str, Any]:
     services = get_graph_services()
     spec = TestSpec.model_validate(state["test_spec"])
-    variables = set((state.get("raw_input") or {}).get("variables") or {}) | set(spec.variables)
+    raw = state.get("raw_input") or {}
+    variables = (set(raw.get("variables") or {}) | set((raw.get("sealed_variables") or {}).get("names") or [])
+                 | set(spec.variables))
     secrets = await services.secrets.available_names(
         SecretScope(state["organization_id"], state["project_id"], state.get("environment_id")))
+    secrets |= set((raw.get("sealed_variables") or {}).get("names") or [])  # run-supplied credentials
     issues = services.validator.validate(spec, available_variables=variables, available_secrets=secrets)
     issue_dicts = [i.to_dict() for i in issues]
     blockers = blocking(issues)
+    scope = state.get("step_scope")
+    if scope is not None and not scope.get("selected"):
+        message = (f"none of the requested steps exist in version {state.get('test_case_version', 1)} of this "
+                   f"test: {', '.join(scope.get('unknown') or []) or 'no step ids given'}")
+        issue_dicts.append({"severity": "error", "code": "SCOPE_EMPTY", "message": message, "step_id": None})
+        await event_bus.publish(state["execution_id"], "PLAN_INVALID", message, issues=issue_dicts)
+        return {"phase": "plan_blocked", "plan_issues": issue_dicts, "execution_status": "BLOCKED",
+                "blocked_reason": f"test plan cannot be executed: {message}"}
     if blockers:
         reason = "; ".join(i.message for i in blockers)[:600]
         await event_bus.publish(state["execution_id"], "PLAN_INVALID", reason, issues=issue_dicts)
@@ -235,7 +262,8 @@ async def initialize_browser_session(state: TestExecutionState, config: Runnable
             project_id=state["project_id"], application_id=state["application_id"],
             environment_id=state.get("environment_id"), test_case_id=state["test_case_id"],
             test_case_version=state.get("test_case_version", 1), spec=spec,
-            variables={**spec.variables, **(raw.get("variables") or {})}, options=options,
+            variables={**spec.variables, **(raw.get("variables") or {}),
+                       **unseal_variables(raw.get("sealed_variables"))}, options=options,
             allowed_domains=list(raw.get("allowed_domains") or []))
         memory = None
         recorder: Any = NullRecorder()
@@ -337,8 +365,8 @@ async def _evaluate_condition(runtime: ExecutionRuntime, step: Step) -> tuple[bo
     if cond.kind == "url_contains":
         result = (cond.expected or "").lower() in obs.url.lower()
     elif cond.kind == "text_visible":
-        from backend.browser.js_probes import VISIBLE_TEXT
         from backend.agents.grounding.text_match import contains_text
+        from backend.browser.js_probes import VISIBLE_TEXT
 
         text = (await runtime.session.adapter.probe(VISIBLE_TEXT) or {}).get("text", "")  # type: ignore[union-attr]
         result = contains_text(text, cond.expected or "")
@@ -677,8 +705,15 @@ async def evaluate_test_result(state: TestExecutionState, config: RunnableConfig
     plan_blocked = state.get("blocked_reason") if state.get("phase") in ("plan_blocked",) or (
         state.get("execution_status") == "BLOCKED" and not steps) else None
     cancelled = state.get("execution_status") == "CANCELLED"
-    outcome, reason = evaluate_outcome(steps, has_assertions=bool(spec and spec.has_verifiable_outcome()),
+    scope = state.get("step_scope")
+    has_assertions = scope["has_assertions"] if scope else bool(spec and spec.has_verifiable_outcome())
+    outcome, reason = evaluate_outcome(steps, has_assertions=has_assertions,
                                        plan_blocked_reason=plan_blocked, cancelled=cancelled)
+    if scope and scope.get("selected"):
+        reason = f"partial re-run ({', '.join(scope['selected'])}): {reason}"
+        if outcome == TestOutcome.INCONCLUSIVE and not has_assertions:
+            reason = (f"partial re-run ({', '.join(scope['selected'])}): the selected steps completed but contain "
+                      "no assertion, so the run verifies nothing; include an assertion step to make it conclusive")
     if state.get("phase") == "abort" and outcome == TestOutcome.PASSED:
         outcome, reason = TestOutcome.BLOCKED, state.get("blocked_reason") or "execution stopped"
     original_ok = all(not r.recovery for r in steps)
@@ -699,6 +734,14 @@ async def persist_test_memory(state: TestExecutionState, config: RunnableConfig 
         return {"phase": "memory_persisted", "learning_stats": {"enabled": False}}
     outcome = (state.get("final_result") or {}).get("outcome")
     passed = outcome == TestOutcome.PASSED.value
+    if state.get("step_scope"):
+        # a partial re-run verifies individual steps, never the whole test: its locator successes are kept as
+        # step evidence but do not count as a validated full run, and it records no test trajectory
+        stats = await runtime.memory.commit_learning(runtime.learning, execution_id=runtime.execution_id,
+                                                     test_case_id=state["test_case_id"], test_passed=False)
+        stats = {**stats, "partial_run": 1}
+        await event_bus.publish(state["execution_id"], "MEMORY_UPDATED", f"learning committed: {stats}", **stats)
+        return {"phase": "memory_persisted", "learning_stats": stats}
     stats = await runtime.memory.commit_learning(runtime.learning, execution_id=runtime.execution_id,
                                                  test_case_id=state["test_case_id"], test_passed=passed)
     trajectory = [{"step_id": r.step_id, "action": r.action, "status": r.status.value, "url": r.page_url}

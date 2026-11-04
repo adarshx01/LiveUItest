@@ -19,7 +19,12 @@ from typing import Any
 
 import jsonschema
 
-from backend.agents.governance.redaction import redact_text, redact_value
+from backend.agents.governance.redaction import (
+    mask_values,
+    redact_text,
+    redact_value,
+    register_sensitive,
+)
 from backend.browser.js_probes import PROBE_NAMES, Probe
 from backend.browser.mcp_client import MCPConnection
 from backend.browser.response_parser import ToolResponse, parse_tool_result
@@ -30,6 +35,36 @@ from backend.dsl.results import FailureCategory
 from backend.harness.budget_manager import current_tracker
 
 log = get_logger(__name__)
+
+
+def _sensitive_argument_values(arguments: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    """Concrete secret values in a tool call (``browser_type.text``, ``browser_fill_form.fields[].value``)."""
+
+    values: list[str] = []
+    for key in keys:
+        item = arguments.get(key)
+        if isinstance(item, str):
+            values.append(item)
+        elif isinstance(item, list):
+            values.extend(f["value"] for f in item if isinstance(f, dict) and isinstance(f.get("value"), str))
+    return [v for v in values if v]
+
+
+def _scrub_echoed_values(response: ToolResponse, secret_values: list[str]) -> None:
+    """Playwright MCP echoes what it ran (``await page.fill('...', 'value')``) and may quote the value in
+    errors. Those strings flow into action records, events, step persistence and reports, so the typed
+    secret is removed at the source. Observation data (snapshot, probe results) is left untouched: it is
+    only held in memory for reasoning and is redacted at every persistence/egress boundary instead."""
+
+    def clean(text: str | None) -> str | None:
+        return redact_text(mask_values(text, secret_values)) if text else text
+
+    response.code = clean(response.code)
+    response.error = clean(response.error)
+    if secret_values:
+        response.text = clean(response.text) or ""
+        response.sections = {k: clean(v) or "" for k, v in response.sections.items()}
+        response.result_text = clean(response.result_text)
 
 
 @dataclass(frozen=True)
@@ -129,6 +164,9 @@ class BrowserToolAdapter:
         tracker = current_tracker()
         if tracker:
             tracker.check_tool()
+        secret_values = _sensitive_argument_values(arguments, sensitive_args)
+        for value in secret_values:
+            register_sensitive(value)  # masked everywhere for the rest of the process lifetime
         safe_args = redact_value({k: ("••••••" if k in sensitive_args else v) for k, v in arguments.items()
                                   if k != "function"})
         if probe is not None:
@@ -148,6 +186,7 @@ class BrowserToolAdapter:
                 response = ToolResponse(tool=tool, ok=False, error=str(exc),
                                         failure_category=FailureCategory.UNKNOWN_FAILURE)
             response.latency_ms = (time.perf_counter() - started) * 1000
+            _scrub_echoed_values(response, secret_values)
             sp.set_attribute("ok", response.ok)
         self.call_count += 1
         if tracker:

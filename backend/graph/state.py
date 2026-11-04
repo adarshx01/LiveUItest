@@ -26,6 +26,7 @@ class TestExecutionState(TypedDict, total=False):
     current_step_id: str | None
     current_step_index: int
     plan_issues: list[dict[str, Any]]
+    step_scope: dict[str, Any] | None  # partial re-run of selected steps (planner.step_scope)
 
     browser_session_id: str | None
     active_tab_id: str | None

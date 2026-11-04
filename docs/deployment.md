@@ -1,5 +1,10 @@
 # Deployment
 
+Set `AITEST_SECRET_KEY` in `.env` first (`python -c "from cryptography.fernet import Fernet;
+print(Fernet.generate_key().decode())"`). Compose refuses to start without it. The API and every
+worker must share one key: secrets stored through the API, and the sealed credential part of a run's
+data set (queued through Redis), are decrypted by whichever worker picks up the run.
+
 `docker compose up --build` runs every component independently:
 
 * **postgres** (`pgvector/pgvector:pg16`) — system of record, LangGraph checkpoints, vector memory.

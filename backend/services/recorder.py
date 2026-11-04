@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from backend.agents.governance.redaction import redact_text, redact_value
 from backend.core.logging import get_logger
 from backend.dsl.results import RecoveryAttempt, StepResult
 from backend.models.entities import (
@@ -81,15 +82,17 @@ class DatabaseRecorder(NullRecorder):
                                                                   ExecutionStep.step_id == result.step_id))
                 session.add(ExecutionStep(execution_id=self.execution_id, step_id=result.step_id, index=result.index,
                                           original_text=result.original_text, action=result.action,
-                                          status=result.status.value, message=result.message[:4000],
+                                          status=result.status.value, message=redact_text(result.message)[:4000],
                                           attempts=result.attempts, recovered=result.recovered,
                                           memory_used=result.memory_used, failure_category=result.failure_category,
-                                          duration_ms=result.duration_ms, result=result.model_dump(mode="json")))
+                                          duration_ms=result.duration_ms,
+                                          result=redact_value(result.model_dump(mode="json"))))
                 for a in result.assertions:
                     session.add(AssertionResultRecord(
                         execution_id=self.execution_id, step_id=result.step_id, assertion_id=a.assertion_id,
-                        type=a.type, status=a.status, expected={"value": a.expected}, actual={"value": a.actual},
-                        message=a.message, evidence=[e.model_dump() for e in a.evidence]))
+                        type=a.type, status=a.status, expected=redact_value({"value": a.expected}),
+                        actual=redact_value({"value": a.actual}), message=redact_text(a.message),
+                        evidence=redact_value([e.model_dump() for e in a.evidence])))
                 await session.commit()
         except Exception as exc:  # pragma: no cover
             log.warning("step persistence failed", error=str(exc)[:200])

@@ -16,23 +16,56 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from backend.agents.governance.policy_engine import ActionRequest, EnvironmentPolicy, PolicyDecision, PolicyEngine
-from backend.agents.governance.secret_manager import SecretManager, SecretScope, get_secret_manager
-from backend.agents.grounding.element_grounder import ElementGrounder, GroundingContext, element_key
-from backend.agents.grounding.locator_strategy import LocatorStrategy, validated_selectors
+from backend.agents.governance.policy_engine import (
+    ActionRequest,
+    EnvironmentPolicy,
+    PolicyDecision,
+    PolicyEngine,
+)
+from backend.agents.governance.redaction import redact_text
+from backend.agents.governance.secret_manager import (
+    SecretManager,
+    SecretScope,
+    get_secret_manager,
+)
+from backend.agents.grounding.element_grounder import (
+    ElementGrounder,
+    GroundingContext,
+    element_key,
+)
+from backend.agents.grounding.locator_strategy import (
+    LocatorStrategy,
+    validated_selectors,
+)
 from backend.agents.observation.page_observer import PageObserver, observation_store
 from backend.agents.planner.lexicon import normalize_text
 from backend.agents.planner.variable_resolver import ResolvedValue, VariableResolver
 from backend.agents.recovery.failure_classifier import FailureAnalysis, classify_failure
 from backend.agents.reporting.screenshot_annotator import annotate_target
-from backend.agents.verification.action_verifier import ActionVerifier, VerificationResult, page_changed
-from backend.agents.verification.assertion_engine import AssertionContext, AssertionEngine
+from backend.agents.verification.action_verifier import (
+    ActionVerifier,
+    VerificationResult,
+    page_changed,
+)
+from backend.agents.verification.assertion_engine import (
+    AssertionContext,
+    AssertionEngine,
+)
 from backend.agents.visual.visual_grounding import VisualGroundingAgent
 from backend.browser.js_probes import scroll_into_view_probe
 from backend.browser.mcp_client import BrowserLaunchOptions
-from backend.browser.session_manager import BrowserSession, SessionManager, get_session_manager
+from backend.browser.session_manager import (
+    BrowserSession,
+    SessionManager,
+    get_session_manager,
+)
 from backend.core.config import Settings, get_settings
-from backend.core.exceptions import BrowserDisconnected, ModelError, ModelUnavailable, PlatformError
+from backend.core.exceptions import (
+    BrowserDisconnected,
+    ModelError,
+    ModelUnavailable,
+    PlatformError,
+)
 from backend.core.ids import new_id
 from backend.core.logging import get_logger
 from backend.dsl.models import ActionType, Step, TestSpec
@@ -46,7 +79,11 @@ from backend.dsl.results import (
     StepResult,
     StepStatus,
 )
-from backend.execution.action_executor import ActionOutcome, InteractionExecutor, target_of
+from backend.execution.action_executor import (
+    ActionOutcome,
+    InteractionExecutor,
+    target_of,
+)
 from backend.execution.events import EventBus, event_bus
 from backend.harness.budget_manager import BudgetTracker, bind_tracker, new_tracker
 from backend.harness.model_gateway import ModelGateway, ModelTier, get_model_gateway
@@ -261,7 +298,7 @@ class ExecutionRuntime:
                 log.warning("page memory write failed", error=str(exc)[:200])
         if (self.runner == "debug" or self.request.options.debug) and obs.snapshot_text:
             ref = await self.artifacts.put_bytes(self.execution_id, "snapshots", f"{obs.observation_id}.yml",
-                                                 obs.snapshot_text.encode("utf-8"), "text/yaml")
+                                                 redact_text(obs.snapshot_text).encode("utf-8"), "text/yaml")
             obs.snapshot_artifact = ref.uri
             if self.recorder is not None:
                 await self.recorder.artifact(ref, self.work.step.id if self.work else None)

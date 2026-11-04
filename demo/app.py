@@ -213,6 +213,21 @@ async def challenge_verify(request: Request, next_url: str = Form("/")) -> Respo
     return response
 
 
+OTP_CODE = "246810"
+
+
+@app.get("/verify-code", response_class=HTMLResponse)
+async def verify_code_page(request: Request) -> HTMLResponse:
+    return render("verify_code.html", request, accepted=False, error=None)
+
+
+@app.post("/verify-code", response_class=HTMLResponse)
+async def verify_code(request: Request, code: str = Form("")) -> HTMLResponse:
+    if code.strip() != OTP_CODE:
+        return render("verify_code.html", request, accepted=False, error="That code is not valid")
+    return render("verify_code.html", request, accepted=True, error=None)
+
+
 @app.get("/register", response_class=HTMLResponse)
 async def register_page(request: Request) -> HTMLResponse:
     return render("register.html", request, countries=COUNTRIES, errors={}, values={})
@@ -372,9 +387,9 @@ async def api_items(offset: int = 0, limit: int = 20) -> JSONResponse:
 
 
 def main() -> None:
-    import uvicorn
-
     import os
+
+    import uvicorn
 
     uvicorn.run(app, host=os.environ.get("DEMO_HOST", "127.0.0.1"), port=8800, log_level="warning")
 

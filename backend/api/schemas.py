@@ -51,6 +51,14 @@ class ExecutionCreate(BaseModel):
     environment_id: str | None = None
     allowed_domains: list[str] = Field(default_factory=list)
     options: dict[str, Any] = Field(default_factory=dict)
+    step_ids: list[str] = Field(default_factory=list, description="run only these steps (partial run)")
+    with_prerequisites: bool = True
+
+
+class StepRerun(BaseModel):
+    step_ids: list[str] = Field(min_length=1, description="step ids from GET /executions/{id}/steps")
+    with_prerequisites: bool = Field(True, description="also run the earlier steps that build the page state; "
+                                                       "false runs only the entry navigation and the selection")
 
 
 class SuiteRun(BaseModel):

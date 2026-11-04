@@ -56,6 +56,10 @@ export default function ExecutionView({ params }: { params: Promise<{ id: string
             {active && <button className="danger" onClick={() => api(`/executions/${id}/cancel`, { method: "POST" })}>Cancel</button>}
             {!active && <button className="secondary" onClick={async () => { const r = await api<Execution>(`/executions/${id}/retry`, { method: "POST" }); window.location.href = `/executions/${r.id}`; }}>Re-run</button>}</div>
         </div>
+        {run.scope && <p className="muted">Partial re-run of {run.scope.step_ids.join(", ")}
+          {run.scope.with_prerequisites ? " (earlier steps re-run to rebuild page state)" : " (isolated)"}</p>}
+        {run.retry_of && <p className="muted">Re-run of <a href={`/executions/${run.retry_of}`}>{run.retry_of}</a> ·{" "}
+          <a href={`/compare?base=${run.retry_of}&other=${id}`}>compare with it</a></p>}
         {run.reason && <p>{run.reason}</p>}
         {current && active && <p><strong>Current step:</strong> {current.message}</p>}
         {pending && (
@@ -82,7 +86,11 @@ export default function ExecutionView({ params }: { params: Promise<{ id: string
           </section>
         </div>
       )}
-      {tab === "steps" && <section className="card">{steps.map((s) => <StepPanel key={s.step_id} step={s} />)}</section>}
+      {tab === "steps" && <section className="card">{steps.map((s) => <StepPanel key={s.step_id} step={s}
+        onRerun={active ? undefined : async (stepId) => {
+          const r = await api<Execution>(`/executions/${id}/rerun-steps`, { method: "POST", body: JSON.stringify({ step_ids: [stepId] }) });
+          window.location.href = `/executions/${r.id}`;
+        }} />)}</section>}
       {tab === "inspect" && (
         <section className="card">
           {!observation && <p className="muted">Browser inspection is available while the execution is live.</p>}

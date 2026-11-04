@@ -67,3 +67,15 @@ inside the shape, then a coordinate action and normal verification. Coordinates 
 `memory_replay`, `semantic`, `visual`, `form`, `hybrid` (selected per test, explainable),
 `data_driven` (one execution per data set via the API), `parallel` (suite runs in isolated contexts,
 bounded by `max_concurrent_executions`), `debug` (screenshots for every phase).
+
+## Test management
+
+Runs keep their data set, so `retry` repeats a run exactly. Plain values are stored as is; values
+with credential-like names are sealed with the platform key and opened only when the browser session
+starts. `rerun-steps` re-runs selected steps of the same test version: by default the earlier steps
+run first to rebuild the page state, and the run stops after the last selected step. Partial runs
+follow the normal oracle, so a selection without an assertion is INCONCLUSIVE. Their verified steps
+reinforce locator memory, but they never count as validated full runs or record test trajectories.
+`compare` lines two executions up step by step (by id, else by text, else by position) and reports
+regressions, fixes, changed targets, recovery and memory changes, slowdowns and metric deltas. It
+backs the UI's "compare with previous" view.

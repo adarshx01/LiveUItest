@@ -28,6 +28,33 @@ sent to models, never persisted in memory, events, logs, screenshots captions or
 verification for passwords compares an in-page FNV-1a fingerprint instead of reading values back.
 The MCP subprocess environment is stripped of platform credentials.
 
+Redaction happens in layers, so one missed path does not leak a value:
+
+1. **At the source.** Playwright MCP echoes the code it ran (`await page.fill(..., 'value')`) and can
+   quote the value in errors. The tool adapter knows which arguments of a call are secret
+   (`browser_type.text`, `browser_fill_form.fields[].value`), registers them and scrubs the echoed
+   code, error and result text before the response leaves the browser layer. Action records, events,
+   step persistence and reports therefore never see the raw value.
+2. **At every persistence or egress boundary.** Logs, events, agent traces, step results, assertion
+   records, run reasons, debug snapshots and model prompts pass through the redactor. It masks every
+   value registered during the process lifetime, plus credential-shaped keys (`password`, `apiKey`,
+   `X-Auth-Token`, `session_id`, ...) and patterns (bearer tokens, JWTs, cloud keys, Luhn-valid card
+   numbers). Keys are matched by word, so counters such as `passed_steps` or `llm_input_tokens` stay
+   readable.
+3. **On the rendered report.** The HTML report gets a final pass that matches raw and HTML-escaped
+   values. Embedded screenshots are skipped, because masking inside base64 would corrupt them.
+4. **In screenshots.** Browsers already draw password inputs as discs. When a secret is typed into
+   any other field (OTP, card number), a registered presentational probe draws that field as discs
+   (`-webkit-text-security`), or makes its text transparent where that property is unsupported.
+   Every later screenshot then shows the field masked. The field's value and events are not changed.
+
+Observation data held in memory (snapshots, probe results) is not scrubbed, because assertions must
+see the real page. It is redacted when it crosses a boundary.
+
+`tests/unit/test_redaction.py` covers the rules. The integration suite checks that the typed secrets
+of the login and OTP scenarios appear nowhere in the HTML/JSON report, in the run's rows of every
+run table, or in any memory table.
+
 ## Isolation and audit
 
 One isolated (in-memory profile) browser context per execution, own workspace for uploads/downloads,

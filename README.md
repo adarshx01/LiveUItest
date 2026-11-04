@@ -29,7 +29,7 @@ element is highlighted.
 
 | Area | Where | Highlights |
 |---|---|---|
-| NL test intelligence | `backend/agents/planner/` | text / Markdown / JSON / CSV / suites, IF/ELSE blocks, variables & secrets, 30-action DSL, assertions as first-class steps, compound sentences, ambiguity reporting (never guessing), optional LLM escalation through a closed schema |
+| NL test intelligence | `backend/agents/planner/` | text / Markdown / JSON / CSV / suites, IF/ELSE blocks, variables & secrets, 31-action DSL with 26 assertion types, assertions as first-class steps, compound sentences, ambiguity reporting (never guessing), optional LLM escalation through a closed schema |
 | Browser layer | `backend/browser/` | MCP client (stdio or HTTP), tool allowlist (`browser_run_code_unsafe` blocked, `browser_evaluate` restricted to platform probes, page-registered WebMCP tools disabled), schema validation, timeouts, budgets, redacted audit log, isolated per-execution contexts, version pinning |
 | Observation | `backend/agents/observation/` | aria snapshot parser, DOM ↔ snapshot correlation by bounding box, semantic classifier, forms/dialogs/landmarks/sections, route-normalized page fingerprints, CAPTCHA / error / overlay / injection signals |
 | Grounding | `backend/agents/grounding/` | contextual scoring (identity, role, context, state, type, option, visual, memory), ambiguity margins, ordinals/positions, calibrated confidence → execute / enhanced verification / refine / ask human; ref-free `LocatorStrategy` with validated Playwright selectors |
@@ -41,8 +41,8 @@ element is highlighted.
 | Memory | `backend/memory/`, `backend/models/` | application / page / test trajectory / locator / failure / pattern memory, exact → page → pgvector retrieval, re-grounding before use, versioning & supersession |
 | Orchestration | `backend/graph/` | 32-node LangGraph graph (spec 6.1) with `AsyncPostgresSaver`, interrupts for approvals and human verification |
 | Harness | `backend/harness/` | agent registry & protocol, model gateway (Anthropic SDK structured outputs, OpenAI-compatible, offline), budgets |
-| API | `backend/api/` | REST (spec 21), WebSocket event stream, approvals, live browser hand-off, browser inspection |
-| UI | `frontend/` | Next.js: test editor with plan preview, live execution (stream + live browser + element overlay), intelligence view, inspection, embedded report, memory inspector, approvals |
+| API | `backend/api/` | REST (spec 21), WebSocket event stream, approvals, live browser hand-off, browser inspection, retries with the stored data set, partial re-runs of individual steps, execution comparison |
+| UI | `frontend/` | Next.js: test editor with plan preview, live execution (stream + live browser + element overlay), intelligence view, inspection, embedded report, memory inspector, approvals, per-step re-run, run comparison |
 | Reports | `backend/agents/reporting/` | self-contained HTML + JSON, annotated before/after screenshots, assertions, recovery, memory reuse, cost, timeline, execution replay / video |
 | Demo app | `demo/` | the 22 controlled scenarios of spec §29 with a ground-truth interaction recorder |
 
@@ -79,8 +79,14 @@ workers, the Playwright MCP browser worker (HTTP transport), the UI and the demo
 * `python scripts/demo_captcha_api.py` — CAPTCHA hand-off through the API: the agent detects the
   challenge, refuses to operate it, pauses with its live browser, an authorized human completes it,
   and the run resumes.
+* `python scripts/demo_parallel_api.py` — one test, three data sets → three concurrent executions in
+  isolated browser contexts (data-driven + parallel runners).
 * `examples/` — test cases for forms, dialogs, tabs, iframes, files, drag-and-drop, canvas, dynamic
-  content, prompt injection, a broken checkout and validation failures.
+  content, autocomplete, mobile layout, slow navigation, a one-time code from the secret vault
+  (masked in screenshots and reports), prompt injection, a broken checkout and validation failures.
+* [`docs/sample-reports/`](docs/sample-reports/) — generated reports, refreshed by `demo_e2e.py`: a
+  first run, the UI-change run (stale memory detected, re-grounded, recovery recorded), a failed
+  broken-checkout run, and a one-time-code run showing secrets masked in code, text and screenshots.
 
 ## Tests
 

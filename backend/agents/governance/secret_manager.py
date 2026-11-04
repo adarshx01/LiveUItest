@@ -8,10 +8,11 @@ redactor immediately, and it is never written to memory, events or reports.
 
 from __future__ import annotations
 
+import json
 import os
-from typing import Protocol
+from typing import Any, Protocol
 
-from backend.agents.governance.redaction import register_sensitive
+from backend.agents.governance.redaction import is_sensitive_name, register_sensitive
 from backend.core.exceptions import SecretNotFound
 from backend.core.security import get_cipher
 
@@ -104,3 +105,33 @@ def get_secret_manager() -> SecretManager:
 def set_secret_manager(manager: SecretManager) -> None:
     global _manager
     _manager = manager
+
+
+def seal_variables(variables: dict[str, Any] | None) -> tuple[dict[str, str], dict[str, Any] | None]:
+    """Split run variables into plain test data and a sealed credential bundle.
+
+    Graph state is checkpointed to PostgreSQL, queued through Redis and stored on the run record, so a
+    credential passed as an ordinary variable (``{"password": ...}``) would otherwise be persisted in
+    clear text. Credential-named values are Fernet-encrypted with the platform key, the same protection
+    as the credential store, registered with the redactor, and only decrypted when the browser session
+    starts. Only their names stay readable (for plan validation).
+    """
+
+    plain: dict[str, str] = {}
+    sensitive: dict[str, str] = {}
+    for name, value in (variables or {}).items():
+        (sensitive if is_sensitive_name(name) else plain)[name] = "" if value is None else str(value)
+    if not sensitive:
+        return plain, None
+    for value in sensitive.values():
+        register_sensitive(value)
+    return plain, {"names": sorted(sensitive), "token": get_cipher().encrypt(json.dumps(sensitive))}
+
+
+def unseal_variables(sealed: dict[str, Any] | None) -> dict[str, str]:
+    if not sealed or not sealed.get("token"):
+        return {}
+    values: dict[str, str] = json.loads(get_cipher().decrypt(sealed["token"]))
+    for value in values.values():
+        register_sensitive(value)
+    return values

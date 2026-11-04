@@ -67,6 +67,11 @@ class VariableResolver:
         if spec is None or spec.source == "none":
             return ResolvedValue("", False, "none")
         if spec.source == "secret" and spec.reference:
+            if self.variables.get(spec.reference):
+                # supplied for this run (a data-driven data set); it arrives sealed and overrides the vault
+                value = self.variables[spec.reference]
+                register_sensitive(value)
+                return ResolvedValue(value, True, "run_secret")
             value = await self.secret_manager.resolve(self.scope, spec.reference)
             return ResolvedValue(value, True, "secret")
         if spec.source == "variable" and spec.reference:

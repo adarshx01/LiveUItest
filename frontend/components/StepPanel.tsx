@@ -5,7 +5,7 @@ import type { StepResult } from "@/types/api";
 import { StatusBadge, statusColor } from "./StatusBadge";
 
 /** Intelligence view of one step: grounding evidence, candidates, strategy, memory, recovery, assertions. */
-export function StepPanel({ step }: { step: StepResult }) {
+export function StepPanel({ step, onRerun }: { step: StepResult; onRerun?: (stepId: string) => void }) {
   const [open, setOpen] = useState(step.status === "FAILED" || step.status === "BLOCKED");
   const last = step.actions[step.actions.length - 1];
   return (
@@ -21,6 +21,9 @@ export function StepPanel({ step }: { step: StepResult }) {
       {open && (
         <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 8 }}>
           {step.message && <div><strong>Result:</strong> {step.message}</div>}
+          {onRerun && <div className="row" style={{ margin: "6px 0" }}>
+            <button className="secondary" title="Runs the earlier steps again to rebuild the page state, then this step"
+              onClick={() => onRerun(step.step_id)}>Re-run this step</button></div>}
           {last?.grounding && (
             <table><tbody>
               <tr><th>Selected target</th><td>{last.grounding.display} <span className="pill">confidence {last.grounding.confidence.toFixed(2)}</span>

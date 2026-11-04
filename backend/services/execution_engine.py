@@ -15,6 +15,7 @@ from typing import Any
 
 from langgraph.types import Command
 
+from backend.agents.governance.redaction import redact_text
 from backend.core.config import get_settings
 from backend.core.exceptions import NotFound
 from backend.core.logging import bind_log_context, get_logger, reset_log_context
@@ -108,7 +109,7 @@ class ExecutionEngine:
         except Exception as exc:  # pragma: no cover - surfaced in run status
             log.exception("execution crashed")
             handle.status = "ERROR"
-            await self._update_run(execution_id, status="ERROR", reason=str(exc)[:500], finished_at=_now())
+            await self._update_run(execution_id, status="ERROR", reason=redact_text(str(exc))[:500], finished_at=_now())
             runtime = runtime_registry.get(execution_id)
             if runtime is not None:
                 await runtime.close()
@@ -130,7 +131,8 @@ class ExecutionEngine:
             metrics = ReportGenerator._metrics(steps, runtime).model_dump()
         flaky = await self._is_flaky(values, final.get("outcome"))
         await self._update_run(execution_id, status=values.get("execution_status") or "COMPLETED",
-                               outcome=final.get("outcome"), reason=final.get("reason", "")[:2000], flaky=flaky,
+                               outcome=final.get("outcome"), reason=redact_text(final.get("reason", ""))[:2000],
+                               flaky=flaky,
                                runner=values.get("runner"), metrics=metrics, report_uri=report.get("html_uri"),
                                report_json_uri=report.get("json_uri"), video_uri=report.get("video_uri"),
                                finished_at=_now())
@@ -192,6 +194,17 @@ def _now() -> dt.datetime:
 def initial_state(*, execution_id: str, organization_id: str, project_id: str, application_id: str,
                   test_case_id: str, test_case_version: int, spec: dict[str, Any] | None,
                   raw_input: dict[str, Any], environment_id: str | None = None) -> dict[str, Any]:
+    from backend.agents.governance.secret_manager import seal_variables
+
+    plain, sealed = seal_variables(raw_input.get("variables"))
+    raw_input = {**raw_input, "variables": plain}
+    if sealed is not None:  # merge with a bundle the caller already sealed (retry / re-run of a run)
+        previous = raw_input.get("sealed_variables")
+        if previous:
+            from backend.agents.governance.secret_manager import unseal_variables
+
+            _, sealed = seal_variables({**unseal_variables(previous), **unseal_variables(sealed)})
+        raw_input["sealed_variables"] = sealed
     return {
         "run_id": execution_id, "execution_id": execution_id, "organization_id": organization_id,
         "project_id": project_id, "application_id": application_id, "environment_id": environment_id,

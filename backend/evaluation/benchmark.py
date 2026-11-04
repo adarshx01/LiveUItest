@@ -122,6 +122,9 @@ def catalogue_scenarios() -> list[Scenario]:
                  ["menu-faq"], options={"viewport": [390, 844]}, capability="hamburger menu at 390x844"),
         Scenario("transient slow navigation", "slow_navigation.md", "PASSED", ["generate-report"], [],
                  capability="2 s server delay absorbed by settle + assertion polling"),
+        Scenario("one-time code from the vault", "otp_verification.md", "PASSED", ["otp-input", "otp-submit"], [],
+                 secrets={"otp_code": "246810"},
+                 capability="secret typed into a non-password field, masked in screenshots and reports"),
     ]
 
 
@@ -183,7 +186,9 @@ def summarize(results: list[ScenarioResult]) -> dict[str, Any]:
         if recovered else 0.0,
         "memory_replay_success_rate": round(len(memory_ok) / len(memory_runs), 3) if memory_runs else None,
         "memory_hit_rate": round(hits / lookups, 3),
-        "human_intervention_rate": 0.0,
+        # runs that paused for a human (approval / verification) are cancelled by the harness -> BLOCKED
+        "human_intervention_rate": round(sum(1 for r in results if r.outcome == "BLOCKED"
+                                             and r.scenario.expected_outcome != "BLOCKED") / n, 3),
         "average_execution_seconds": round(sum(r.duration_s for r in results) / n, 1),
         "average_llm_cost_usd": round(sum(r.metrics.get("llm_cost_usd", 0.0) for r in results) / n, 4),
         "recoveries": sum(r.metrics.get("recoveries", 0) for r in results),

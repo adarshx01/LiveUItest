@@ -8,7 +8,8 @@ Runs, against the controlled demo app with a clean memory:
   * the capability catalogue (forms, dialogs, tabs, iframe, files, drag, canvas,
     dynamic content, prompt injection, broken workflow, validation failures).
 
-Writes docs/demo-results.md with per-scenario results and the evaluation metrics.
+Writes docs/demo-results.md with per-scenario results and the evaluation metrics, and refreshes the
+sample reports in docs/sample-reports/ from this run.
 Prerequisites: PostgreSQL, the demo app (python -m demo.app) and Playwright MCP.
 """
 
@@ -16,15 +17,26 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import shutil
 import sys
 from pathlib import Path
 
 from sqlalchemy import text
 
 from backend.bootstrap import bootstrap
-from backend.evaluation.benchmark import catalogue_scenarios, login_scenarios, run_scenario, summarize
+from backend.evaluation.benchmark import (
+    catalogue_scenarios,
+    login_scenarios,
+    run_scenario,
+    summarize,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
+# scenario -> published sample report (docs/sample-reports/)
+SAMPLE_REPORTS = {"1. first run (learns)": "login-first-run.html",
+                  "3. UI changed (v2 locators)": "ui-change-healed.html",
+                  "broken checkout": "broken-checkout-failed.html",
+                  "one-time code from the vault": "otp-secret-masked.html"}
 MEMORY_TABLES = ("locator_memory", "page_memory", "page_fingerprints", "failure_memory", "memory_versions",
                  "test_execution_memory", "interaction_patterns", "application_memory")
 
@@ -46,6 +58,10 @@ async def main(include_catalogue: bool) -> int:
                   f"recovered={result.metrics.get('recovered_steps', 0)} touched={result.touched} "
                   f"wrong={result.wrong_touches} missed={result.missed} {result.duration_s:.0f}s", flush=True)
             results.append(result)
+            if scenario.name in SAMPLE_REPORTS and result.report:
+                target = ROOT / "docs" / "sample-reports" / SAMPLE_REPORTS[scenario.name]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(result.report, target)
         metrics = summarize(results)
         lines = ["# End-to-end demonstration results", "",
                  f"Generated {dt.datetime.now(dt.UTC):%Y-%m-%d %H:%M UTC} by `scripts/demo_e2e.py` against the demo "
@@ -60,7 +76,9 @@ async def main(include_catalogue: bool) -> int:
         lines += ["", "## Evaluation metrics", "", "| Metric | Value |", "|---|---|"]
         lines += [f"| {k.replace('_', ' ')} | {v} |" for k, v in metrics.items()]
         lines += ["", "Ground truth comes from the demo app's interaction recorder (`data-gt` attributes), so the "
-                  "element-identification metrics reflect which controls were actually operated."]
+                  "element-identification metrics reflect which controls were actually operated.", "",
+                  "Sample reports from this run: " + ", ".join(f"[{name}](sample-reports/{file})"
+                                                               for name, file in SAMPLE_REPORTS.items()) + "."]
         out = ROOT / "docs" / "demo-results.md"
         out.write_text("\n".join(lines) + "\n")
         print(f"\nmetrics: {metrics}\nwritten {out}")

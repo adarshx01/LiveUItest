@@ -14,12 +14,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from backend.agents.governance.redaction import redact_text
 from backend.agents.grounding.element_grounder import ElementGrounder, GroundingContext
 from backend.agents.grounding.text_match import similarity
 from backend.agents.observation.page_observer import PageObserver
 from backend.agents.planner.lexicon import normalize_text
 from backend.browser.js_probes import (
     ELEMENT_STATE,
+    MASK_SENSITIVE_FIELD,
     SCROLL_INFO,
     find_text_probe,
     scroll_edge_probe,
@@ -56,7 +58,8 @@ class ActionOutcome:
     @classmethod
     def from_response(cls, response: ToolResponse, **kwargs: Any) -> ActionOutcome:
         return cls(ok=response.ok, tool=response.tool, error=response.error,
-                   failure_category=response.failure_category, code=response.code,
+                   failure_category=response.failure_category,
+                   code=redact_text(response.code) if response.code else None,
                    downloads=list(response.downloads), **kwargs)
 
 
@@ -120,6 +123,12 @@ class InteractionExecutor:
         outcome = ActionOutcome.from_response(response, args={"target": target, "element": el.display(),
                                                               "text": "••••••" if sensitive else text},
                                               expected={"value": text, "sensitive": sensitive})
+        if response.ok and sensitive and text and (el.input_type or "").lower() != "password":
+            # browsers already render password inputs as discs; anything else would show the secret in the
+            # after-action screenshot and every later one
+            masked = await self.adapter.probe(MASK_SENSITIVE_FIELD, target, el.display())
+            outcome.notes.append("sensitive field rendered masked for screenshots" if masked
+                                 else "WARNING: could not mask the sensitive field for screenshots")
         if response.ok and autocomplete:
             picked = await self._pick_autocomplete(text)
             if picked:

@@ -19,6 +19,19 @@ export interface Execution {
   outcome: Outcome | null; reason: string; runner: string | null; metrics: Record<string, number>;
   created_at: string; started_at: string | null; finished_at: string | null; report: string | null;
   pending?: Record<string, unknown>; approvals?: Approval[];
+  retry_of?: string | null; scope?: { step_ids: string[]; with_prerequisites: boolean; rerun_of: string | null } | null;
+}
+
+export interface ComparedStep {
+  status: string; message: string; duration_ms: number; attempts: number; recovered: boolean; memory_used: boolean;
+  failure_category: string | null; target: { display: string | null; method: string | null; confidence: number | null } | null;
+}
+
+export interface Comparison {
+  base: Partial<Execution>; other: Partial<Execution>; same_test_case: boolean; same_version: boolean; summary: string[];
+  metric_deltas: Record<string, { base: number | null; other: number | null }>;
+  counts: { regressions: number; fixes: number; target_changes: number; changed_steps: number };
+  steps: { index: number; text: string; action: string; base: ComparedStep | null; other: ComparedStep | null; changes: string[] }[];
 }
 
 export interface Approval { id: string; kind: string; status: string; step_id: string | null; request: Record<string, unknown> }

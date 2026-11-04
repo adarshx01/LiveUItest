@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Two-step verification - Acme Portal{% endblock %}
+{% block content %}
+<div class="card" style="max-width:440px;margin:auto">
+  <h1>Two-step verification</h1>
+  {% if accepted %}
+  <div class="success" role="status" data-gt="otp-accepted">Code accepted. Your device is now trusted.</div>
+  {% else %}
+  <p>Enter the 6-digit code from your authenticator app.</p>
+  {% if error %}<div class="alert" role="alert" data-gt="otp-error">{{ error }}</div>{% endif %}
+  <form method="post" action="/verify-code" aria-label="Verification form">
+    <label for="otp">Verification code</label>
+    <input id="otp" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" data-gt="otp-input">
+    <button type="submit" data-gt="otp-submit">Verify</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

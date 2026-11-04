@@ -14,6 +14,8 @@ from typing import Any
 
 from sqlalchemy import select
 
+from backend.agents.governance.secret_manager import seal_variables, unseal_variables
+from backend.agents.planner.step_scope import StepScope
 from backend.core.config import get_settings
 from backend.core.exceptions import NotFound
 from backend.core.ids import new_id
@@ -23,6 +25,9 @@ from backend.services.execution_engine import ExecutionEngine, RunHandle, initia
 from backend.services.platform_service import PlatformService
 
 log = get_logger(__name__)
+
+# keys the dispatcher keeps on the run record next to the user's execution options
+RUN_RECORD_KEYS = ("dataset", "sealed_dataset")
 
 STREAM = "aitest:executions"
 GROUP = "aitest-workers"
@@ -38,16 +43,27 @@ class ExecutionDispatcher:
 
     async def start_execution(self, *, org_id: str, test_case_id: str, version: int | None, variables: dict[str, str],
                               options: dict[str, Any], allowed_domains: list[str], environment_id: str | None,
-                              actor: str, retry_of: str | None = None, suite_run_id: str | None = None) -> ExecutionRun:
+                              actor: str, retry_of: str | None = None, suite_run_id: str | None = None,
+                              sealed_variables: dict[str, Any] | None = None,
+                              scope: StepScope | None = None) -> ExecutionRun:
         tc, tcv = await self.platform.get_test_case(org_id, test_case_id, version)
-        run = await self.platform.create_run(org_id=org_id, tc=tc, version=tcv.version, options=options,
+        plain, sealed = seal_variables(variables)
+        if sealed_variables:  # carried over from the run being retried / re-run
+            _, sealed = seal_variables({**unseal_variables(sealed_variables), **unseal_variables(sealed)})
+        run_options = {k: v for k, v in options.items() if k not in RUN_RECORD_KEYS}
+        if scope is not None:
+            run_options["scope"] = scope.to_options()
+        # the run record keeps its data set so it can be retried or partially re-run: plain test data as is,
+        # credential-named values only as the sealed (encrypted) bundle
+        stored = {**run_options, "dataset": plain, **({"sealed_dataset": sealed} if sealed else {})}
+        run = await self.platform.create_run(org_id=org_id, tc=tc, version=tcv.version, options=stored,
                                              environment_id=environment_id, retry_of=retry_of,
                                              suite_run_id=suite_run_id, created_by=actor)
         state = initial_state(execution_id=run.id, organization_id=org_id, project_id=tc.project_id,
                               application_id=tc.application_id, test_case_id=tc.id, test_case_version=tcv.version,
                               spec=tcv.spec, environment_id=environment_id,
-                              raw_input={"name": tc.name, "variables": variables, "options": options,
-                                         "allowed_domains": allowed_domains})
+                              raw_input={"name": tc.name, "variables": plain, "sealed_variables": sealed,
+                                         "options": run_options, "allowed_domains": allowed_domains})
         await self.audit(org_id, actor, "execution.start", "execution", run.id, {"test_case_id": tc.id})
         settings = get_settings()
         if settings.run_worker_in_api:

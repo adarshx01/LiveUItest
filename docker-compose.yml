@@ -24,6 +24,9 @@ services:
     build: { context: ., dockerfile: infrastructure/docker/Dockerfile.backend }
     env_file: .env
     environment: &backend_env
+      # one Fernet key shared by the API and every worker: secrets stored through the API and sealed
+      # data sets queued to workers must decrypt everywhere (an empty key would give each container its own)
+      AITEST_SECRET_KEY: ${AITEST_SECRET_KEY:?set AITEST_SECRET_KEY in .env - see .env.example}
       AITEST_DATABASE_URL: postgresql+asyncpg://aitest:aitest@postgres:5432/aitest
       AITEST_CHECKPOINT_DATABASE_URL: postgresql://aitest:aitest@postgres:5432/aitest
       AITEST_REDIS_URL: redis://redis:6379/0
