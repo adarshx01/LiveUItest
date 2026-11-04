@@ -172,6 +172,7 @@ class StepResult(BaseModel):
     ended_at: float | None = None
     duration_ms: float = 0.0
     branch: str | None = None  # "then"/"else" for conditional children
+    failure_contexts: list[str] = Field(default_factory=list)  # artifacts: url, error, a11y, candidates, screenshot
     llm_calls: int = 0
 
     @property

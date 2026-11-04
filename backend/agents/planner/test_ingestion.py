@@ -163,6 +163,8 @@ def _parse_text_case(text: str, fmt: str) -> RawTestCase:
                 section = "data"
             elif re.match(r"^(pre-?conditions?|setup)$", title):
                 section = "preconditions"
+            elif re.match(r"^(description|about|notes?|overview|purpose|summary|how to run|usage)$", title):
+                section = "description"  # prose about the test, never steps
             elif case.name == "Untitled test":
                 case.name = re.sub(r"^(test( case)?\s*[:#-]\s*)", "", heading.group("title"), flags=re.IGNORECASE)
             continue
@@ -187,6 +189,14 @@ def _parse_text_case(text: str, fmt: str) -> RawTestCase:
             case.description = (case.description + " " + content).strip()
             continue
         # steps section -------------------------------------------------------
+        bare_url = BARE_URL_RE.fullmatch(content)
+        if bare_url:
+            url = bare_url.group(0).rstrip(".,;")
+            url = url if url.startswith("http") else f"https://{url}"
+            if case.base_url is None and not case.lines:
+                case.base_url = url  # a test that starts with just a URL: that is the application under test
+                continue
+            content = f"Go to {url}"  # later bare URLs are navigation steps
         if ENDIF_RE.match(content):
             if block_stack:
                 block_stack.pop()
@@ -206,6 +216,9 @@ def _parse_text_case(text: str, fmt: str) -> RawTestCase:
             base_indent = indent
         add_line(RawLine(text=content, line_no=line_no), indent)
     return case
+
+
+BARE_URL_RE = re.compile(r"(?:https?://|www\.)[^\s\"'<>]+", re.IGNORECASE)
 
 
 def _var_name(key: str) -> str:

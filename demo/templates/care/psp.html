@@ -1,0 +1,19 @@
+{% extends "care/base.html" %}
+{% block title %}Patient Support Program · CareLink{% endblock %}
+{% block content %}
+<h2>Patient Support Program</h2>
+<div class="panel">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <strong>Patients</strong><input class="input" style="width:260px" placeholder="Search patients" aria-label="Search patients" data-gt="care-search">
+  </div>
+  <table>
+    <thead><tr><th>Patient</th><th>Patient ID</th><th>Enrolled</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for p in patients %}
+      <tr><td><a href="/care/patients/{{ p.id }}" data-gt="care-patient-{{ p.id }}">{{ p.name }}</a></td>
+          <td>{{ p.code }}</td><td>{{ p.enrolled }}</td><td>{{ p.status }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -36,6 +36,7 @@ from backend.dsl.models import ActionType, Step, TargetSpec
 from backend.dsl.observation import InventoryElement, Observation
 from backend.dsl.results import FailureCategory
 from backend.execution.dropdown import DropdownDriver
+from backend.execution.pickers import DATE_HINT, TIME_HINT, PickerDriver, describe, looks_like_date, looks_like_time
 
 log = get_logger(__name__)
 
@@ -89,6 +90,7 @@ class InteractionExecutor:
         self.observer = observer
         self.grounder = grounder
         self.dropdowns = DropdownDriver(self.adapter, observer)
+        self.pickers = PickerDriver(self.adapter)
 
     # ------------------------------------------------------------------ element actions
     async def click(self, el: InventoryElement, *, double: bool = False, right: bool = False) -> ActionOutcome:
@@ -130,6 +132,10 @@ class InteractionExecutor:
             return ActionOutcome(False, error="element is not addressable", failure_category=FailureCategory.ELEMENT_NOT_FOUND)
         notes: list[str] = []
         input_type = (el.input_type or "").lower()
+        if not sensitive and input_type not in PICKER_TYPES:
+            picked = await self._custom_picker(el, text)
+            if picked is not None:
+                return picked
         if not sensitive and (input_type in PICKER_TYPES or input_type == "number"):
             # browser-rendered pickers (date, time, color, range...) accept one machine format and no keystrokes
             normalized = normalize_for_input(text, input_type, min_value=el.min_value, max_value=el.max_value,
@@ -165,6 +171,28 @@ class InteractionExecutor:
                 outcome.expected = {"value": picked, "sensitive": False}
         return outcome
 
+    async def _custom_picker(self, el: InventoryElement, text: str) -> ActionOutcome | None:
+        """Dates and times entered into page-drawn pickers (read-only inputs, buttons, popover fields).
+
+        Only fields that look like date/time fields are routed here; a picker that does not open returns
+        None and the caller continues with its normal typing / dropdown handling."""
+
+        if _is_native_select(el) or el.tag == "select":
+            return None
+        about = describe(el)
+        plain_input = el.tag in ("input", "textarea") and el.editable and not el.readonly
+        time = looks_like_time(text)
+        if time and (TIME_HINT.search(about) or not plain_input):
+            outcome = await self.pickers.set_time(el, time, text)
+            if outcome is not None:
+                return outcome
+        date = None if time else looks_like_date(text)
+        if date and (DATE_HINT.search(about) or not plain_input):
+            outcome = await self.pickers.set_date(el, date, text)
+            if outcome is not None:
+                return outcome
+        return None
+
     async def _pick_autocomplete(self, text: str, el: InventoryElement | None = None) -> str | None:
         """After typing into an autocomplete, pick the suggestion the text means (free text stays if none)."""
 
@@ -191,7 +219,9 @@ class InteractionExecutor:
 
     async def select(self, el: InventoryElement, option: str, observation: Observation | None) -> ActionOutcome:
         if el.role == "option" and el.context.owner_ref:
-            native = await self.dropdowns.select_native(el.context.owner_ref, f"select owning {el.display()}", option)
+            owner = observation.by_ref(el.context.owner_ref) if observation is not None else None
+            native = await self.dropdowns.select_native(el.context.owner_ref, f"select owning {el.display()}", option,
+                                                        css=owner.css_selector if owner else None)
             if native is not None:
                 return native
         if el.role in ("radio", "tab", "button", "option", "menuitemradio", "checkbox", "switch") and \
@@ -202,7 +232,7 @@ class InteractionExecutor:
             return outcome
         target = target_of(el)
         if target and (_is_native_select(el) or el.tag == "select"):
-            native = await self.dropdowns.select_native(target, el.display(), option)
+            native = await self.dropdowns.select_native(target, el.display(), option, css=el.css_selector)
             if native is not None:
                 return native
         if target and el.tag in ("input", "textarea") and not el.datalist and el.role not in ("combobox",) \
@@ -217,6 +247,10 @@ class InteractionExecutor:
             outcome = await self.fill(el, value or option, sensitive=False)
             outcome.notes.insert(0, f"input with a browser-rendered datalist: typed {match.describe() if match.found else repr(option)}")
             return outcome
+        if (el.input_type or "").lower() not in PICKER_TYPES:
+            picked = await self._custom_picker(el, option)  # "Click on Start Date and select 09 June 2026"
+            if picked is not None:
+                return picked
         return await self.dropdowns.select_custom(el, option)
 
     async def set_checked(self, el: InventoryElement, desired: bool | None) -> ActionOutcome:

@@ -70,9 +70,27 @@ class SpellingResult:
         return "spelling: " + ", ".join(f"{a}->{b}" for a, b in self.corrections)
 
 
+SUFFIXES = ("s", "es", "d", "ed", "ing", "er", "ers", "ion", "ions", "ation", "ions", "ly", "ment", "ments",
+            "able", "al", "ity", "ive", "ness", "ful")
+
+
+def is_real_word(word: str) -> bool:
+    """A known word or a regular derivation of one ("named" = name+d, "selection" = select+ion, "logs")."""
+
+    if word in KNOWN_WORDS or word in VERBS or word in STRUCTURE_WORDS or word in FIELD_WORDS:
+        return True
+    for suffix in SUFFIXES:
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            stem = word[: -len(suffix)]
+            if stem in KNOWN_WORDS or stem + "e" in KNOWN_WORDS or (len(stem) > 3 and stem[-1] == stem[-2]
+                                                                      and stem[:-1] in KNOWN_WORDS):
+                return True
+    return False
+
+
 def _best(word: str, vocabulary: tuple[str, ...]) -> str | None:
     w = word.lower()
-    if len(w) < 3 or w in KNOWN_WORDS or w in vocabulary:
+    if len(w) < 3 or is_real_word(w) or w in vocabulary:
         return None
     candidates: list[tuple[float, int, str]] = []
     for rank, cand in enumerate(vocabulary):

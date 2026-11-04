@@ -1,5 +1,24 @@
 # Deployment
 
+**Single user / workstation:** nothing to deploy. The defaults are a SQLite database and checkpoint file
+under `data/`, filesystem artifacts, in-process events and execution, and an OS-keychain encryption key.
+See [windows-local-setup.md](windows-local-setup.md) for the step-by-step guide (also valid on macOS and
+Linux with the usual path syntax). PostgreSQL, Redis and S3 are integrations you switch on:
+
+| Setting | Local default | Team / server |
+|---|---|---|
+| `AITEST_DATABASE_URL` | `sqlite+aiosqlite:///<repo>/data/aitest.db` | `postgresql+asyncpg://...` (pgvector required) |
+| `AITEST_CHECKPOINT_DATABASE_URL` | `auto` (`data/checkpoints.db`) | `auto` (same PostgreSQL) |
+| `AITEST_USE_REDIS` / `AITEST_REDIS_URL` | `false` / empty | `true` / `redis://...` |
+| `AITEST_RUN_WORKER_IN_API` | `true` | `false` with separate workers |
+| `AITEST_SECRET_KEY` | empty (OS keychain / `data/secret.key`) | one shared key for all processes |
+
+The schema is created and upgraded automatically on start-up (new tables and new columns; SQLite runs in
+WAL mode with a busy timeout). A configured PostgreSQL that cannot be reached is an error with the URL's
+host in the message; Redis that is not enabled is simply not used.
+
+## Containers
+
 Set `AITEST_SECRET_KEY` in `.env` first (`python -c "from cryptography.fernet import Fernet;
 print(Fernet.generate_key().decode())"`). Compose refuses to start without it. The API and every
 worker must share one key: secrets stored through the API, and the sealed credential part of a run's
@@ -31,4 +50,5 @@ an animated replay assembled from the per-action screenshots).
 * Per-environment allowed domains and explicit grants for destructive/financial/messaging actions.
 * Artifact retention (`AITEST_ARTIFACT_RETENTION_DAYS`) and S3 server-side encryption (enabled by default).
 * Export OpenTelemetry spans to your collector (the in-process exporter backs `/diagnostics/traces`).
-* Optional LLM: `AITEST_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`.
+* Optional LLM: `AITEST_LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`, or `azure_openai` with the
+  `AZURE_OPENAI_*` settings (verify with `python -m backend.cli check-llm`).

@@ -125,6 +125,10 @@ def _after_human(state: TestExecutionState) -> str:
     return "observe_current_page" if state.get("phase") == "human_resolved" else "fail_step"
 
 
+def _after_fail(state: TestExecutionState) -> str:
+    return "next_test_action" if state.get("phase") == "step_failed_continue" else "final_assertions"
+
+
 def _after_next(state: TestExecutionState) -> str:
     return "final_assertions" if state.get("phase") == "abort" else "prepare_next_action"
 
@@ -170,7 +174,7 @@ def build_graph() -> StateGraph:
     g.add_conditional_edges("recovery_policy_check", _after_recovery_policy)
     g.add_conditional_edges("recovery_executor", _after_recovery_exec)
     g.add_conditional_edges("await_human", _after_human)
-    g.add_edge("fail_step", "final_assertions")
+    g.add_conditional_edges("fail_step", _after_fail)
     g.add_edge("final_assertions", "evaluate_test_result")
     g.add_edge("evaluate_test_result", "persist_test_memory")
     g.add_edge("persist_test_memory", "generate_report")

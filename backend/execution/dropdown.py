@@ -66,7 +66,8 @@ class DropdownDriver:
         state = await self.adapter.probe(SELECT_STATE, target, description)
         return state if isinstance(state, dict) and state.get("isSelect") else None
 
-    async def select_native(self, target: str, description: str, wanted: str) -> ActionOutcome | None:
+    async def select_native(self, target: str, description: str, wanted: str,
+                            css: str | None = None) -> ActionOutcome | None:
         """Choose option(s) of a native select. None when ``target`` is not a native select."""
 
         from backend.execution.action_executor import ActionOutcome
@@ -128,7 +129,7 @@ class DropdownDriver:
         response = await self.adapter.select_option(target, description, values)
         out = ActionOutcome.from_response(response, args={"target": target, "values": values},
                                           expected={"selected_option": ", ".join(labels), "selected_list": labels,
-                                                    "kind": "native", "owner_target": target,
+                                                    "kind": "native", "owner_target": target, "owner_css": css,
                                                     "multiple": bool(state.get("multiple"))},
                                           notes=notes)
         if len(labels) > 1:

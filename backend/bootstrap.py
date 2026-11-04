@@ -24,7 +24,7 @@ class Platform:
     sessionmaker: Any
 
 
-async def bootstrap(*, checkpointer: str = "postgres", json_logs: bool | None = None) -> Platform:
+async def bootstrap(*, checkpointer: str = "auto", json_logs: bool | None = None) -> Platform:
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_json if json_logs is None else json_logs)
     configure_tracing(settings.service_name)

@@ -29,7 +29,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 EMBED_DIM = 256
+# SQLite only auto-increments INTEGER PRIMARY KEY columns
+BigIntPK = BigInteger().with_variant(Integer, "sqlite")
 JSONType = JSON().with_variant(JSONB(), "postgresql")
+# pgvector on PostgreSQL (indexed cosine search); a plain JSON array elsewhere (SQLite), where the
+# memory manager ranks candidates in Python. Same values either way.
+EmbeddingType = JSON().with_variant(Vector(EMBED_DIM), "postgresql")
 
 
 def utcnow() -> dt.datetime:
@@ -147,7 +152,7 @@ class TestCaseVersion(Base, TimestampMixin):
 
 class TestStep(Base):
     __tablename__ = "test_steps"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     test_case_version_id: Mapped[str] = mapped_column(ForeignKey("test_case_versions.id"), index=True)
     step_id: Mapped[str] = mapped_column(String(32))
     index: Mapped[int] = mapped_column(Integer)
@@ -209,7 +214,7 @@ class ExecutionRun(Base, TimestampMixin):
 class ExecutionStep(Base):
     __tablename__ = "execution_steps"
     __table_args__ = (UniqueConstraint("execution_id", "step_id"),)
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     execution_id: Mapped[str] = mapped_column(ForeignKey("execution_runs.id"), index=True)
     step_id: Mapped[str] = mapped_column(String(32))
     index: Mapped[int] = mapped_column(Integer)
@@ -239,7 +244,7 @@ class BrowserSessionEvent(Base):
     """MCP tool-call audit log (redacted)."""
 
     __tablename__ = "browser_session_events"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     execution_id: Mapped[str] = mapped_column(String(64), index=True)
     ts: Mapped[float] = mapped_column(Float)
     tool: Mapped[str] = mapped_column(String(64))
@@ -255,7 +260,7 @@ class ExecutionEvent(Base):
     """Execution event stream (also published live over WebSocket)."""
 
     __tablename__ = "agent_events"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     execution_id: Mapped[str] = mapped_column(String(64), index=True)
     seq: Mapped[int] = mapped_column(Integer)
     ts: Mapped[float] = mapped_column(Float)
@@ -267,7 +272,7 @@ class ExecutionEvent(Base):
 
 class AgentTrace(Base):
     __tablename__ = "agent_traces"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     execution_id: Mapped[str] = mapped_column(String(64), index=True)
     ts: Mapped[float] = mapped_column(Float)
     agent: Mapped[str] = mapped_column(String(64))
@@ -282,7 +287,7 @@ class AgentTrace(Base):
 
 class AssertionResultRecord(Base):
     __tablename__ = "assertion_results"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     execution_id: Mapped[str] = mapped_column(String(64), index=True)
     step_id: Mapped[str] = mapped_column(String(32))
     assertion_id: Mapped[str] = mapped_column(String(64))
@@ -296,7 +301,7 @@ class AssertionResultRecord(Base):
 
 class RecoveryAttemptRecord(Base):
     __tablename__ = "recovery_attempts"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     execution_id: Mapped[str] = mapped_column(String(64), index=True)
     step_id: Mapped[str] = mapped_column(String(32))
     attempt: Mapped[int] = mapped_column(Integer)
@@ -325,7 +330,7 @@ class Artifact(Base, TimestampMixin):
     """Screenshots, videos, traces, snapshots and reports (kind column)."""
 
     __tablename__ = "artifacts"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     execution_id: Mapped[str] = mapped_column(String(64), index=True)
     step_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     kind: Mapped[str] = mapped_column(String(32), index=True)  # screenshot | video | trace | snapshot | report
@@ -337,7 +342,7 @@ class Artifact(Base, TimestampMixin):
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
     ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     actor: Mapped[str] = mapped_column(String(128))
@@ -349,7 +354,7 @@ class AuditLog(Base):
 
 class ExecutionMetric(Base):
     __tablename__ = "execution_metrics"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     execution_id: Mapped[str] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(64), index=True)
     value: Mapped[float] = mapped_column(Float)
@@ -367,7 +372,7 @@ class MemoryScopeMixin:
 class PageFingerprintRecord(Base, MemoryScopeMixin):
     __tablename__ = "page_fingerprints"
     __table_args__ = (UniqueConstraint("application_id", "structure_hash"),)
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     route_pattern: Mapped[str] = mapped_column(String(512), index=True)
     structure_hash: Mapped[str] = mapped_column(String(32), index=True)
     title_pattern: Mapped[str] = mapped_column(String(512), default="")
@@ -380,7 +385,7 @@ class PageFingerprintRecord(Base, MemoryScopeMixin):
 class ApplicationMemory(Base, MemoryScopeMixin):
     __tablename__ = "application_memory"
     __table_args__ = (UniqueConstraint("application_id", "key"),)
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     key: Mapped[str] = mapped_column(String(128))
     value: Mapped[dict[str, Any]] = mapped_column(default=dict)
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
@@ -390,14 +395,14 @@ class ApplicationMemory(Base, MemoryScopeMixin):
 class PageMemory(Base, MemoryScopeMixin):
     __tablename__ = "page_memory"
     __table_args__ = (UniqueConstraint("application_id", "route_pattern", "structure_hash"),)
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     route_pattern: Mapped[str] = mapped_column(String(512), index=True)
     structure_hash: Mapped[str] = mapped_column(String(32), index=True)
     page_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     title_pattern: Mapped[str] = mapped_column(String(512), default="")
     forms: Mapped[dict[str, Any]] = mapped_column(default=dict)
     signature: Mapped[list[Any]] = mapped_column(default=list)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(EmbeddingType, nullable=True)
     seen_count: Mapped[int] = mapped_column(Integer, default=1)
     last_verified_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
@@ -418,7 +423,7 @@ class LocatorMemory(Base, MemoryScopeMixin):
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active|superseded|invalidated
     memory_version: Mapped[int] = mapped_column(Integer, default=1, index=True)
     supersedes: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(EmbeddingType, nullable=True)
     last_execution_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_verified_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -432,7 +437,7 @@ Index("ix_locator_memory_lookup", LocatorMemory.application_id, LocatorMemory.ro
 class TestExecutionMemory(Base, MemoryScopeMixin):
     __tablename__ = "test_execution_memory"
     __table_args__ = (UniqueConstraint("test_case_id", "test_case_version"),)
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     test_case_id: Mapped[str] = mapped_column(String(64), index=True)
     test_case_version: Mapped[int] = mapped_column(Integer)
     trajectory: Mapped[list[Any]] = mapped_column(default=list)
@@ -446,7 +451,7 @@ class TestExecutionMemory(Base, MemoryScopeMixin):
 class InteractionPattern(Base):
     __tablename__ = "interaction_patterns"
     __table_args__ = (UniqueConstraint("organization_id", "application_id", "pattern_type", "signature"),)
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
     application_id: Mapped[str] = mapped_column(String(64), index=True)
     pattern_type: Mapped[str] = mapped_column(String(64))  # custom_dropdown | autocomplete | login_flow | ...
@@ -460,7 +465,7 @@ class InteractionPattern(Base):
 
 class FailureMemory(Base, MemoryScopeMixin):
     __tablename__ = "failure_memory"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     execution_id: Mapped[str] = mapped_column(String(64), index=True)
     route_pattern: Mapped[str] = mapped_column(String(512), index=True)
     action_signature: Mapped[str] = mapped_column(String(256), index=True)
@@ -477,7 +482,7 @@ class FailureMemory(Base, MemoryScopeMixin):
 
 class MemoryVersion(Base):
     __tablename__ = "memory_versions"
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     memory_id: Mapped[str] = mapped_column(String(64), index=True)
     memory_type: Mapped[str] = mapped_column(String(32))
     version: Mapped[int] = mapped_column(Integer)

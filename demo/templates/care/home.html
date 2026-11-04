@@ -1,0 +1,13 @@
+{% extends "care/base.html" %}
+{% block title %}Programs · CareLink{% endblock %}
+{% block content %}
+<h2>Programs</h2>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
+  <a class="panel" href="/care/programs/psp" style="text-decoration:none;color:inherit" data-gt="care-psp">
+    <strong>Patient Support Program</strong><div class="muted">Enrolled patients, interactions and follow-ups</div></a>
+  <a class="panel" href="#" style="text-decoration:none;color:inherit" data-gt="care-pap">
+    <strong>Patient Assistance Program</strong><div class="muted">Financial assistance applications</div></a>
+  <a class="panel" href="#" style="text-decoration:none;color:inherit" data-gt="care-hcp">
+    <strong>HCP Engagement</strong><div class="muted">Healthcare professional outreach</div></a>
+</div>
+{% endblock %}

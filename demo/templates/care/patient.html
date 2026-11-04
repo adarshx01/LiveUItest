@@ -1,0 +1,251 @@
+{% extends "care/base.html" %}
+{% block title %}{{ patient.name }} · CareLink{% endblock %}
+{% block head %}
+<style>
+  .tabs { display:flex; gap:4px; border-bottom:2px solid var(--line); margin-bottom:16px; }
+  .tabs [role=tab] { background:none; color:var(--muted); border:0; border-bottom:3px solid transparent; padding:10px 16px; cursor:pointer; font-size:14px; margin-bottom:-2px; }
+  .tabs [role=tab][aria-selected=true] { color:var(--brand); border-bottom-color:var(--brand); font-weight:600; }
+  [role=tabpanel][hidden] { display:none; }
+  .backdrop { position:fixed; inset:0; background:rgba(15,30,45,.35); z-index:20; }
+  .drawer { position:fixed; top:0; right:0; bottom:0; width:430px; background:#fff; z-index:21; box-shadow:-6px 0 20px rgba(0,0,0,.15); display:flex; flex-direction:column; }
+  .drawer header { padding:16px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
+  .drawer .body { padding:18px 20px; overflow:auto; flex:1; }
+  .drawer footer { padding:14px 20px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:10px; }
+  /* Theme: material-style select whose panel is rendered in an overlay container at the end of <body> */
+  .mselect { height:38px; border:1px solid #c5cfd8; border-radius:4px; display:flex; align-items:center; padding:0 10px; cursor:pointer; justify-content:space-between; font-size:14px; }
+  .mselect .ph { color:#8a96a3; } .mselect::after { content:"▾"; color:#8a96a3; }
+  .cdk-panel { position:fixed; z-index:40; background:#fff; border-radius:4px; box-shadow:0 6px 18px rgba(0,0,0,.2); padding:4px 0; }
+  .cdk-panel [role=option] { padding:9px 14px; cursor:pointer; font-size:14px; } .cdk-panel [role=option]:hover { background:#eef5f8; }
+  .cdk-backdrop { position:fixed; inset:0; z-index:39; }
+  /* Status: div soup, no ARIA at all */
+  .soup { height:38px; border:1px solid #c5cfd8; border-radius:4px; display:flex; align-items:center; padding:0 10px; cursor:pointer; font-size:14px; }
+  .soup .ph { color:#8a96a3; }
+  .soup-list { position:absolute; left:0; right:0; top:62px; background:#fff; border:1px solid #c5cfd8; border-radius:4px; z-index:30; box-shadow:0 6px 14px rgba(0,0,0,.12); }
+  .soup-list div { padding:9px 12px; cursor:pointer; font-size:14px; } .soup-list div:hover { background:#eef5f8; }
+  /* Call direction: editable combobox (type to filter) */
+  .cb-list { position:absolute; left:0; right:0; top:62px; background:#fff; border:1px solid #c5cfd8; border-radius:4px; z-index:30; margin:0; padding:4px 0; list-style:none; }
+  .cb-list li { padding:9px 12px; cursor:pointer; font-size:14px; } .cb-list li:hover { background:#eef5f8; }
+  /* calendar */
+  .hl-calendar { position:absolute; top:62px; left:0; width:300px; background:#fff; border:1px solid #c5cfd8; border-radius:6px; z-index:30; padding:10px; box-shadow:0 6px 14px rgba(0,0,0,.15); }
+  .hl-cal-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+  .hl-cal-head button { background:none; border:0; font-size:20px; cursor:pointer; color:var(--brand); padding:2px 10px; }
+  .hl-cal-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; text-align:center; }
+  .hl-cal-grid .dow { font-size:11px; color:var(--muted); padding:4px 0; }
+  .hl-day { background:none; border:0; padding:7px 0; border-radius:50%; cursor:pointer; font-size:13px; color:var(--ink); }
+  .hl-day:hover { background:#e3f1f5; } .hl-day.outside { color:#b5bec7; } .hl-day.selected { background:var(--brand); color:#fff; }
+  /* time popover */
+  .hl-time-pop { position:absolute; top:62px; left:0; background:#fff; border:1px solid #c5cfd8; border-radius:6px; z-index:30; padding:12px; display:flex; gap:8px; align-items:center; box-shadow:0 6px 14px rgba(0,0,0,.15); }
+  .hl-time-pop input { width:56px; height:36px; text-align:center; border:1px solid #c5cfd8; border-radius:4px; font-size:15px; }
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#16794a; color:#fff; padding:10px 18px; border-radius:6px; z-index:50; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="muted"><a href="/care/programs/psp" data-gt="care-crumb-psp">Patient Support Program</a> / {{ patient.name }}</div>
+<h2 style="margin:6px 0 14px">{{ patient.name }} <span class="muted">({{ patient.code }})</span></h2>
+<div class="tabs" role="tablist" aria-label="Patient sections">
+  <button role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true" data-gt="care-tab-overview">Overview</button>
+  <button role="tab" id="tab-interaction" aria-controls="panel-interaction" aria-selected="false" data-gt="care-tab-interaction">Interaction</button>
+  <button role="tab" id="tab-logs" aria-controls="panel-logs" aria-selected="false" data-gt="care-tab-logs">Interaction Logs</button>
+</div>
+<section role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" class="panel">
+  <p><strong>Program:</strong> Patient Support Program</p><p><strong>Enrolled:</strong> {{ patient.enrolled }}</p>
+  <p><strong>Care coordinator:</strong> Team North</p>
+</section>
+<section role="tabpanel" id="panel-interaction" aria-labelledby="tab-interaction" class="panel" hidden>
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div><strong>Interactions</strong><div class="muted">Calls, messages and visits with the patient</div></div>
+    <button class="btn" id="open-drawer" data-gt="care-open-record">Record Interaction</button>
+  </div>
+</section>
+<section role="tabpanel" id="panel-logs" aria-labelledby="tab-logs" class="panel" hidden>
+  <strong>Interaction Logs</strong>
+  <table style="margin-top:8px">
+    <thead><tr><th>Patient</th><th>Theme</th><th>Status</th><th>Direction</th><th>Start</th><th>Recorded</th></tr></thead>
+    <tbody id="logs-body">
+    {% for log in logs %}
+      <tr><td>{{ log.patient }}</td><td>{{ log.theme }}</td><td>{{ log.status }}</td><td>{{ log.direction }}</td>
+          <td>{{ log.start_date }} {{ log.start_time }}</td><td>{{ log.recorded }}</td></tr>
+    {% else %}
+      <tr id="no-logs"><td colspan="6" class="muted">No interactions recorded yet</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<div id="drawer-root" hidden>
+  <div class="backdrop" id="drawer-backdrop"></div>
+  <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+    <header><strong id="drawer-title">Record Interaction</strong>
+      <button class="btn ghost" id="drawer-close" aria-label="Close" data-gt="care-drawer-close">✕</button></header>
+    <div class="body">
+      <div class="err" id="form-error" role="alert" hidden></div>
+      <div class="field"><span class="lbl" id="lbl-theme">Theme</span>
+        <div class="mselect" id="theme" role="combobox" tabindex="0" aria-haspopup="listbox" aria-expanded="false"
+             aria-labelledby="lbl-theme" data-gt="care-theme"><span class="ph" id="theme-value">Select theme</span></div></div>
+      <div class="field" id="status-field"><span class="lbl">Status</span>
+        <div class="soup" id="status" data-gt="care-status"><span class="ph" id="status-value">Select status</span></div></div>
+      <div class="field" id="direction-field"><label class="lbl" for="direction">Call Direction</label>
+        <input class="input" id="direction" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="direction-list"
+               placeholder="Select direction" autocomplete="off" data-gt="care-direction"></div>
+      <div class="field" id="date-field"><label class="lbl" for="start-date">Start Date</label>
+        <input class="input" id="start-date" readonly placeholder="DD/MM/YYYY" data-gt="care-start-date"></div>
+      <div class="field" id="time-field"><label class="lbl" for="start-time">Start Time</label>
+        <input class="input" id="start-time" readonly placeholder="HH:MM" data-gt="care-start-time"></div>
+      <div class="field"><label class="lbl" for="notes">Notes</label>
+        <textarea class="input" id="notes" style="height:70px;padding-top:8px" data-gt="care-notes"></textarea></div>
+    </div>
+    <footer><button class="btn ghost" id="drawer-cancel" data-gt="care-drawer-cancel">Cancel</button>
+      <button class="btn" id="drawer-submit" data-gt="care-submit">Record Interaction</button></footer>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  const PATIENT = {{ patient | tojson }};
+  const THEMES = ["Initial Call", "Follow-up Call", "Adverse Event Report", "Product Query"];
+  const STATUSES = ["Reached", "Not reachable", "Call back later", "Not reachable - wrong number"];
+  const DIRECTIONS = ["Inbound", "Outbound"];
+  const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const $ = (id) => document.getElementById(id);
+  const form = {theme: null, status: null, direction: null, date: null, time: null};
+  let closePopups = () => {};
+
+  // ---- tabs (async panel switch, like an SPA)
+  document.querySelectorAll('[role=tab]').forEach(tab => tab.addEventListener('click', () => {
+    setTimeout(() => {
+      document.querySelectorAll('[role=tab]').forEach(t => t.setAttribute('aria-selected', String(t === tab)));
+      document.querySelectorAll('[role=tabpanel]').forEach(p => p.hidden = p.id !== tab.getAttribute('aria-controls'));
+    }, 150);
+  }));
+
+  // ---- drawer
+  const drawer = $('drawer-root');
+  function openDrawer() {
+    Object.keys(form).forEach(k => form[k] = null);
+    $('theme-value').textContent = 'Select theme'; $('theme-value').className = 'ph';
+    $('status-value').textContent = 'Select status'; $('status-value').className = 'ph';
+    $('direction').value = ''; $('start-date').value = ''; $('start-time').value = ''; $('notes').value = '';
+    $('form-error').hidden = true;
+    setTimeout(() => { drawer.hidden = false; }, 250);  // slide-in delay
+  }
+  function closeDrawer() { closePopups(); drawer.hidden = true; }
+  $('open-drawer').addEventListener('click', openDrawer);
+  $('drawer-close').addEventListener('click', closeDrawer);
+  $('drawer-cancel').addEventListener('click', closeDrawer);
+
+  // ---- Theme: overlay-rendered listbox (portal at the end of <body>)
+  $('theme').addEventListener('click', (e) => {
+    e.stopPropagation(); closePopups();
+    const r = $('theme').getBoundingClientRect();
+    const back = document.createElement('div'); back.className = 'cdk-backdrop';
+    const panel = document.createElement('div'); panel.className = 'cdk-panel'; panel.setAttribute('role', 'listbox');
+    panel.id = 'theme-panel'; panel.style.left = r.left + 'px'; panel.style.top = (r.bottom + 2) + 'px'; panel.style.width = r.width + 'px';
+    THEMES.forEach(t => { const o = document.createElement('div'); o.setAttribute('role', 'option'); o.textContent = t;
+      o.setAttribute('aria-selected', String(form.theme === t)); o.dataset.gt = 'care-theme-opt';
+      o.addEventListener('click', (ev) => { ev.stopPropagation(); form.theme = t; $('theme-value').textContent = t;
+        $('theme-value').className = ''; closePopups(); }); panel.appendChild(o); });
+    back.addEventListener('click', () => closePopups());
+    $('overlay-container').append(back, panel);
+    $('theme').setAttribute('aria-expanded', 'true'); $('theme').setAttribute('aria-controls', 'theme-panel');
+  });
+
+  // ---- Status: plain divs, options appear after a short "load"
+  $('status').addEventListener('click', (e) => {
+    e.stopPropagation(); closePopups();
+    setTimeout(() => {
+      const list = document.createElement('div'); list.className = 'soup-list'; list.id = 'status-list';
+      STATUSES.forEach(s => { const o = document.createElement('div'); o.textContent = s; o.dataset.gt = 'care-status-opt';
+        o.addEventListener('click', (ev) => { ev.stopPropagation(); form.status = s; $('status-value').textContent = s;
+          $('status-value').className = ''; closePopups(); }); list.appendChild(o); });
+      $('status-field').appendChild(list);
+    }, 300);
+  });
+
+  // ---- Call Direction: editable combobox with filtering
+  function directionList(filter) {
+    const old = $('direction-list'); if (old) old.remove();
+    const list = document.createElement('ul'); list.className = 'cb-list'; list.id = 'direction-list'; list.setAttribute('role', 'listbox');
+    DIRECTIONS.filter(d => d.toLowerCase().includes((filter || '').toLowerCase())).forEach(d => {
+      const li = document.createElement('li'); li.setAttribute('role', 'option'); li.textContent = d; li.dataset.gt = 'care-direction-opt';
+      li.addEventListener('mousedown', (ev) => { ev.preventDefault(); form.direction = d; $('direction').value = d;
+        list.remove(); $('direction').setAttribute('aria-expanded', 'false'); });
+      list.appendChild(li); });
+    $('direction-field').appendChild(list); $('direction').setAttribute('aria-expanded', 'true');
+  }
+  $('direction').addEventListener('click', (e) => { e.stopPropagation(); closePopups(); directionList($('direction').value); });
+  $('direction').addEventListener('input', () => { form.direction = DIRECTIONS.includes($('direction').value) ? $('direction').value : null;
+    directionList($('direction').value); });
+
+  // ---- Start Date: read-only input + calendar (opens on the current month)
+  function renderCalendar(year, month) {
+    let cal = $('date-cal');
+    if (!cal) { cal = document.createElement('div'); cal.className = 'hl-calendar'; cal.id = 'date-cal'; $('date-field').appendChild(cal);
+      cal.addEventListener('click', ev => ev.stopPropagation()); }
+    cal.innerHTML = '';
+    const head = document.createElement('div'); head.className = 'hl-cal-head';
+    const prev = document.createElement('button'); prev.type = 'button'; prev.setAttribute('aria-label', 'Previous month'); prev.textContent = '‹';
+    const title = document.createElement('span'); title.className = 'hl-cal-title'; title.textContent = MONTHS[month] + ' ' + year;
+    const next = document.createElement('button'); next.type = 'button'; next.setAttribute('aria-label', 'Next month'); next.textContent = '›';
+    prev.addEventListener('click', () => setTimeout(() => renderCalendar(month === 0 ? year - 1 : year, (month + 11) % 12), 80));
+    next.addEventListener('click', () => setTimeout(() => renderCalendar(month === 11 ? year + 1 : year, (month + 1) % 12), 80));
+    head.append(prev, title, next); cal.appendChild(head);
+    const grid = document.createElement('div'); grid.className = 'hl-cal-grid';
+    ['Mo','Tu','We','Th','Fr','Sa','Su'].forEach(d => { const s = document.createElement('span'); s.className = 'dow'; s.textContent = d; grid.appendChild(s); });
+    const first = new Date(year, month, 1); const offset = (first.getDay() + 6) % 7;
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(year, month, 1 - offset + i);
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'hl-day' + (d.getMonth() !== month ? ' outside' : '');
+      b.textContent = String(d.getDate()); b.dataset.gt = 'care-day';
+      b.addEventListener('click', () => { const dd = String(d.getDate()).padStart(2, '0'), mm = String(d.getMonth() + 1).padStart(2, '0');
+        form.date = d.getFullYear() + '-' + mm + '-' + dd; $('start-date').value = dd + '/' + mm + '/' + d.getFullYear(); closePopups(); });
+      grid.appendChild(b);
+    }
+    cal.appendChild(grid);
+  }
+  $('start-date').addEventListener('click', (e) => { e.stopPropagation(); closePopups(); const now = new Date(); renderCalendar(now.getFullYear(), now.getMonth()); });
+
+  // ---- Start Time: read-only input + HH / MM popover with Set
+  $('start-time').addEventListener('click', (e) => {
+    e.stopPropagation(); closePopups();
+    const pop = document.createElement('div'); pop.className = 'hl-time-pop'; pop.id = 'time-pop';
+    pop.innerHTML = '<input id="tp-h" placeholder="HH" aria-label="Hours" maxlength="2" inputmode="numeric" data-gt="care-hh">' +
+                    '<span>:</span><input id="tp-m" placeholder="MM" aria-label="Minutes" maxlength="2" inputmode="numeric" data-gt="care-mm">' +
+                    '<button type="button" class="btn" id="tp-set" data-gt="care-time-set">Set</button>';
+    pop.addEventListener('click', ev => ev.stopPropagation());
+    $('time-field').appendChild(pop);
+    $('tp-set').addEventListener('click', () => {
+      const h = parseInt($('tp-h').value, 10), m = parseInt($('tp-m').value, 10);
+      if (isNaN(h) || isNaN(m) || h > 23 || m > 59) { $('tp-h').style.borderColor = 'red'; return; }
+      form.time = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0'); $('start-time').value = form.time; closePopups();
+    });
+  });
+
+  closePopups = function () {
+    ['date-cal', 'time-pop', 'status-list', 'direction-list'].forEach(id => { const el = $(id); if (el) el.remove(); });
+    $('overlay-container').innerHTML = '';
+    $('theme').setAttribute('aria-expanded', 'false'); $('direction').setAttribute('aria-expanded', 'false');
+  };
+  document.addEventListener('click', () => closePopups());
+
+  // ---- submit
+  $('drawer-submit').addEventListener('click', async () => {
+    const missing = Object.entries({Theme: form.theme, Status: form.status, 'Call Direction': form.direction,
+                                    'Start Date': form.date, 'Start Time': form.time}).filter(([, v]) => !v).map(([k]) => k);
+    if (missing.length) { $('form-error').textContent = 'Required: ' + missing.join(', '); $('form-error').hidden = false; return; }
+    const res = await fetch('/care/api/patients/' + PATIENT.id + '/interactions', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(Object.assign({notes: $('notes').value}, form))});
+    if (!res.ok) { $('form-error').textContent = 'Could not save the interaction'; $('form-error').hidden = false; return; }
+    const log = await res.json();
+    const none = $('no-logs'); if (none) none.remove();
+    const tr = document.createElement('tr');
+    [log.patient, log.theme, log.status, log.direction, log.start_date + ' ' + log.start_time, log.recorded].forEach(v => {
+      const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); });
+    $('logs-body').prepend(tr);
+    closeDrawer();
+    const toast = document.createElement('div'); toast.className = 'toast'; toast.setAttribute('role', 'status');
+    toast.textContent = 'Interaction recorded'; document.body.appendChild(toast); setTimeout(() => toast.remove(), 4000);
+  });
+})();
+</script>
+{% endblock %}

@@ -23,6 +23,7 @@ from backend.dsl.models import ActionType, Step
 from backend.dsl.observation import InventoryElement, Observation
 from backend.dsl.results import FailureCategory
 from backend.execution.action_executor import ActionOutcome
+from backend.execution.pickers import value_matches
 
 
 @dataclass
@@ -122,6 +123,24 @@ class ActionVerifier:
                 return result("failed", "field does not contain the entered value", FailureCategory.VERIFICATION_FAILED)
             return result("verified", "field contains the entered value")
 
+        if expected.get("kind") in ("date", "time"):
+            kind = str(expected["kind"])
+            want = str(expected.get("date") or expected.get("time"))
+            el = self.relocate(element, before, after)
+            shown = None
+            for handle in dict.fromkeys(h for h in (expected.get("trigger_target"), expected.get("trigger_css"),
+                                                    el.ref if el else None, el.css_selector if el else None) if h):
+                state = await self.adapter.probe(ELEMENT_STATE, str(handle), f"{kind} field") or {}
+                if state:
+                    shown = state.get("value") or state.get("text")
+                    break
+            ok = value_matches(kind, shown, want, placeholder=expected.get("placeholder"))
+            checks.append({"check": f"{kind}_value", "ok": ok, "detail": {"expected": want, "shown": shown}})
+            if not ok:
+                return result("failed", f"the field shows {shown!r}, not the requested {kind} {want}",
+                              FailureCategory.VERIFICATION_FAILED)
+            return result("verified", f"{kind} field shows {shown!r}")
+
         if expected.get("kind") == "menu":
             checks.append({"check": "menu_path", "ok": True, "detail": expected.get("menu_path")})
             return result("verified", f"menu path {' > '.join(expected.get('menu_path') or [])} activated")
@@ -133,8 +152,16 @@ class ActionVerifier:
             el = self.relocate(element, before, after)
             selected: list[str] = []
             if kind == "native" and expected.get("owner_target"):
-                # read the live <select>: the snapshot can lag behind a change event
-                state = await self.adapter.probe(SELECT_STATE, str(expected["owner_target"]), "native select") or {}
+                # read the live <select>. A postback (ASP.NET AutoPostBack) or re-render replaces the element, so
+                # the ref grounded before the change can be stale: fall back to its stable selector, then to the
+                # element re-located on the current page
+                handles = [expected.get("owner_target"), expected.get("owner_css"),
+                           el.ref if el else None, el.css_selector if el else None]
+                state = {}
+                for handle in dict.fromkeys(h for h in handles if h):
+                    state = await self.adapter.probe(SELECT_STATE, str(handle), "native select") or {}
+                    if state.get("isSelect"):
+                        break
                 selected = [str(s) for s in state.get("selected") or []]
                 ok = bool(state.get("isSelect")) and all(any(similarity(w, s) >= 0.95 for s in selected)
                                                          for w in wanted)

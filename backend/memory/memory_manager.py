@@ -171,15 +171,7 @@ class MemoryManager:
                 candidates[row.id] = self._candidate(row, level)
             if not candidates:
                 vector = embed(step_text(step), purpose=step.target.purpose)
-                distance = LocatorMemory.embedding.cosine_distance(vector)
-                query = (select(LocatorMemory, distance.label("d"))
-                         .where(self._scope_filter(LocatorMemory), LocatorMemory.status == "active",
-                                LocatorMemory.action_signature.like(f"{step.action.value}:%"))
-                         .order_by(distance).limit(5))
-                if route:
-                    query = query.where(LocatorMemory.route_pattern == route)
-                for row, d in (await session.execute(query)).all():
-                    sim = 1 - float(d)
+                for row, sim in await self._nearest(session, vector, step, route):
                     if sim >= 0.78:
                         cand = self._candidate(row, "semantic")
                         cand.similarity = sim
@@ -188,6 +180,23 @@ class MemoryManager:
         ranked = sorted(candidates.values(), key=lambda c: ({"exact_test_case": 0, "exact_route": 1, "semantic": 2}
                                                             .get(c.match_level, 3), -c.confidence))
         return ranked[:limit]
+
+    async def _nearest(self, session: Any, vector: list[float], step: Step,
+                       route: str | None) -> list[tuple[LocatorMemory, float]]:
+        """Top-5 semantically similar strategies: pgvector index on PostgreSQL, exact cosine in Python on
+        SQLite (memory is scoped to one application and action, so the candidate set stays small)."""
+
+        filters = [self._scope_filter(LocatorMemory), LocatorMemory.status == "active",
+                   LocatorMemory.action_signature.like(f"{step.action.value}:%")]
+        if route:
+            filters.append(LocatorMemory.route_pattern == route)
+        if session.bind.dialect.name == "postgresql":
+            distance = LocatorMemory.embedding.cosine_distance(vector)
+            query = select(LocatorMemory, distance.label("d")).where(*filters).order_by(distance).limit(5)
+            return [(row, 1 - float(d)) for row, d in (await session.execute(query)).all()]
+        rows = (await session.execute(select(LocatorMemory).where(*filters).limit(2000))).scalars().all()
+        scored = [(row, _cosine(vector, row.embedding)) for row in rows if row.embedding]
+        return sorted(scored, key=lambda item: -item[1])[:5]
 
     @staticmethod
     def _candidate(row: LocatorMemory, level: str) -> MemoryCandidate:
@@ -393,3 +402,9 @@ class MemoryManager:
     def _scope_kwargs(self) -> dict[str, Any]:
         return {"organization_id": self.scope.organization_id, "project_id": self.scope.project_id,
                 "application_id": self.scope.application_id, "environment_id": self.scope.environment_id}
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    num = sum(x * y for x, y in zip(a, b, strict=False))
+    den = (sum(x * x for x in a) ** 0.5) * (sum(y * y for y in b) ** 0.5)
+    return num / den if den else 0.0

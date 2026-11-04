@@ -8,8 +8,10 @@ in-process by id; graph state only carries the id and a summary.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import OrderedDict
+from typing import Any
 
 from backend.agents.observation.element_inventory import InventoryBuilder
 from backend.agents.observation.page_fingerprint import fingerprint
@@ -49,14 +51,38 @@ observation_store = ObservationStore()
 class PageObserver:
     name = "page_observer"
 
+    SETTLE_TIMEOUT_S = 8.0  # longest we wait for a page that is still blank / loading
+
     def __init__(self, adapter: BrowserToolAdapter, viewport: tuple[int, int]) -> None:
         self.adapter = adapter
         self.viewport = viewport
 
+    async def _settled_snapshot(self) -> Any:
+        """Right after a navigation the snapshot can be empty (about:blank, document still parsing, SPA
+        not rendered yet). Re-snapshot with backoff until the page shows content, bounded by a deadline."""
+
+        deadline = time.monotonic() + self.SETTLE_TIMEOUT_S
+        attempt = 0
+        while True:
+            snap = await self.adapter.snapshot()
+            if snap.modal_state is not None:
+                return snap
+            url = snap.page_url or ""
+            meaningful = bool(snap.ok and snap.snapshot_yaml and _has_content(snap.snapshot_yaml))
+            if meaningful and not url.startswith("about:blank"):
+                if attempt:
+                    log.info("page content appeared after re-snapshot", attempts=attempt + 1)
+                return snap
+            if time.monotonic() >= deadline:
+                log.warning("page still empty after waiting", url=url, error=snap.error)
+                return snap
+            attempt += 1
+            await asyncio.sleep(min(0.25 * attempt, 1.0))
+
     async def observe(self, *, with_tabs: bool = True, with_signals: bool = True) -> Observation:
         observation_id = new_id("obs")
         obs = Observation(observation_id=observation_id, viewport=self.viewport, timestamp=time.time())
-        snap = await self.adapter.snapshot()
+        snap = await self._settled_snapshot()
         if snap.modal_state is not None:
             obs.modal_state = snap.modal_state
             obs.url = snap.page_url or ""
@@ -96,3 +122,13 @@ class PageObserver:
             obs.tabs = [TabInfo(index=0, title=obs.title, url=obs.url, current=True)]
         observation_store.put(obs)
         return obs
+
+
+def _has_content(snapshot_yaml: str) -> bool:
+    """Anything a user could see or use: a named/role-bearing node or text beyond the bare document."""
+
+    for node in parse_snapshot(snapshot_yaml):
+        if node.role not in ("document", "generic", "none", "presentation", "WebArea", "RootWebArea") or node.text \
+                or node.name:
+            return True
+    return False

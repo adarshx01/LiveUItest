@@ -11,16 +11,20 @@ dependencies = [
   "pydantic==2.14.2",
   "pydantic-settings==2.16.2",
   "sqlalchemy[asyncio]==2.1.7",
+  "aiosqlite==0.22.1",
   "asyncpg==0.32.0",
   "psycopg[binary]==3.3.7",
   "psycopg-pool==3.3.3",
   "langgraph==1.2.19",
   "langgraph-checkpoint-postgres==3.2.0",
+  "langgraph-checkpoint-sqlite==3.1.3",
   "pgvector==0.5.1",
   "redis==8.1.0",
   "mcp==2.3.0",
   "httpx==0.28.1",
   "anthropic==2.4.0",
+  "openai==1.108.0",
+  "keyring==25.7.0",
   "jinja2==3.1.6",
   "cryptography==50.0.2",
   "opentelemetry-sdk==1.45.2",
@@ -51,7 +55,7 @@ asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 markers = [
   "browser: requires Playwright MCP + Chromium",
-  "db: requires PostgreSQL with pgvector",
+  "db: requires a database (SQLite by default; PostgreSQL when AITEST_DATABASE_URL points there)",
   "e2e: end-to-end platform demonstrations",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]

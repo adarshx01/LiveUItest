@@ -10,6 +10,7 @@ execute -> settle -> verify -> learn | classify -> recover.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -164,12 +165,32 @@ class StepWork:
     failed_strategies: list[dict[str, Any]] = field(default_factory=list)
     healed: bool = False
     used_memory_id: str | None = None
+    failure_contexts: list[str] = field(default_factory=list)
+    llm_recovery_used: int = 0
     analysis: FailureAnalysis | None = None
     screenshot_before: str | None = None
     screenshot_after: str | None = None
     url_before: str | None = None
     assertion_results: list[Any] = field(default_factory=list)
     llm_calls: int = 0
+
+
+INTERACTIVE_FOR_CONTEXT = {"button", "link", "textbox", "searchbox", "combobox", "listbox", "option", "checkbox",
+                           "radio", "switch", "tab", "menuitem", "slider", "spinbutton", "generic"}
+MODEL_RECOVERY_STRATEGIES = ("reobserve_and_reground", "reground_without_memory", "reground_excluding_previous",
+                             "wait_for_stability", "scroll_into_view", "dismiss_overlay", "visual_grounding",
+                             "give_up")
+
+
+class RecoveryChoice(BaseModel):
+    strategy: str
+    diagnosis: str
+
+
+NEEDS_ELEMENT = {ActionType.CLICK, ActionType.DOWNLOAD, ActionType.DOUBLE_CLICK, ActionType.RIGHT_CLICK,
+                 ActionType.HOVER, ActionType.FILL, ActionType.TYPE, ActionType.CLEAR, ActionType.SELECT,
+                 ActionType.CHECK, ActionType.UNCHECK, ActionType.TOGGLE, ActionType.DRAG, ActionType.UPLOAD,
+                 ActionType.CAPTURE_VALUE}
 
 
 class ExecutionRuntime:
@@ -693,7 +714,9 @@ class ExecutionRuntime:
 
     async def _dispatch(self, step: Step, work: StepWork) -> ActionOutcome:
         ex = self.executor
-        assert ex is not None and self.session is not None
+        if ex is None or self.session is None:
+            return ActionOutcome(False, error="browser session is not available",
+                                 failure_category=FailureCategory.BROWSER_DISCONNECTED)
         el = work.element
         decision = work.decision
         action = step.action
@@ -711,6 +734,12 @@ class ExecutionRuntime:
                     click_count=2 if action == ActionType.DOUBLE_CLICK else 1)
             return ActionOutcome.from_response(response, args={"x": x, "y": y}, notes=["coordinate fallback "
                                                                                           "(visually grounded)"])
+        if el is None and action in NEEDS_ELEMENT:
+            # never crash the node: a missing element (page re-rendered, still loading, stale observation) is a
+            # recoverable failure that re-observation, re-grounding and waiting can fix
+            return ActionOutcome(False, error="the target element is not present in the current page observation "
+                                              "(page changed, re-rendered or still loading)",
+                                 failure_category=FailureCategory.ELEMENT_NOT_FOUND)
         if action in (ActionType.FILL, ActionType.TYPE, ActionType.SELECT, ActionType.UPLOAD, ActionType.CLEAR):
             work.value = await self.resolver.resolve(step.value) if step.value else ResolvedValue("", False, "none")
         if action == ActionType.NAVIGATE:
@@ -724,29 +753,21 @@ class ExecutionRuntime:
         if action == ActionType.RELOAD:
             return await ex.navigate(self.observation.url if self.observation else "about:blank")
         if action in (ActionType.CLICK, ActionType.DOWNLOAD):
-            assert el is not None
             return await ex.click(el)
         if action == ActionType.DOUBLE_CLICK:
-            assert el is not None
             return await ex.click(el, double=True)
         if action == ActionType.RIGHT_CLICK:
-            assert el is not None
             return await ex.click(el, right=True)
         if action == ActionType.HOVER:
-            assert el is not None
             return await ex.hover(el)
         if action in (ActionType.FILL, ActionType.TYPE):
-            assert el is not None and work.value is not None
             return await ex.fill(el, work.value.text, sensitive=work.value.sensitive,
                                  slowly=action == ActionType.TYPE, observation=self.observation)
         if action == ActionType.CLEAR:
-            assert el is not None
             return await ex.fill(el, "", sensitive=False)
         if action == ActionType.SELECT:
-            assert el is not None and work.value is not None
             return await ex.select(el, work.value.text, self.observation)
         if action in (ActionType.CHECK, ActionType.UNCHECK, ActionType.TOGGLE):
-            assert el is not None
             desired = True if action == ActionType.CHECK else False if action == ActionType.UNCHECK else None
             if action == ActionType.CHECK and el.role == "radio":
                 desired = True
@@ -756,13 +777,11 @@ class ExecutionRuntime:
                                         element_key(self.previous_element) != element_key(el))
             return await ex.press_key(step.key or "Enter", el, focus=focus)
         if action == ActionType.DRAG:
-            assert el is not None
             if work.destination is None:
                 return ActionOutcome(False, error="drop destination not found",
                                      failure_category=FailureCategory.ELEMENT_NOT_FOUND)
             return await ex.drag(el, work.destination)
         if action == ActionType.UPLOAD:
-            assert el is not None and work.value is not None
             return await ex.upload(el, work.value.text)
         if action == ActionType.SCROLL:
             return await ex.scroll(step)
@@ -781,7 +800,9 @@ class ExecutionRuntime:
             uri = await self.screenshot(step.id, "capture", full_page="full_page" in step.notes)
             return ActionOutcome(uri is not None, notes=[f"screenshot {uri}"])
         if action == ActionType.CAPTURE_VALUE:
-            assert el is not None and step.capture_as
+            if not step.capture_as:
+                return ActionOutcome(False, error="no variable name to capture into",
+                                     failure_category=FailureCategory.UNKNOWN_FAILURE)
             value = await ex.read_value(el)
             if value is None:
                 return ActionOutcome(False, error="no value to capture", failure_category=FailureCategory.ELEMENT_NOT_FOUND)
@@ -981,6 +1002,85 @@ class ExecutionRuntime:
         result = self.results[step.id]
         result.failure_category = analysis.category.value
         return analysis
+
+    async def capture_failure_context(self, step: Step) -> str | None:
+        """Everything needed to understand one failed attempt, saved as an evidence artifact (redacted)."""
+
+        work = self.ensure_work(step)
+        obs = work.after or self.observation
+        decision = work.decision
+        context: dict[str, Any] = {
+            "step": {"id": step.id, "index": step.index, "text": step.original_text, "action": step.action.value},
+            "attempt": work.attempts, "url": obs.url if obs else None, "title": obs.title if obs else None,
+            "error": (work.outcome.error if work.outcome else None)
+            or (work.verification.message if work.verification else None)
+            or (decision.reason if decision else None),
+            "analysis": work.analysis.to_dict() if work.analysis else None,
+            "decision": {"target": decision.display, "confidence": decision.confidence, "method": decision.method,
+                         "evidence": decision.evidence[:6],
+                         "candidates": [{"display": c.display, "score": c.score, "features": c.features}
+                                        for c in decision.candidates[:6]]} if decision else None,
+            "verification": work.verification.checks if work.verification else None,
+            "tried_strategies": list(work.tried_strategies),
+            "page_state": obs.page_state.model_dump() if obs else None,
+            "interactive_elements": [{"display": e.display(), "role": e.role, "visible": e.visible,
+                                      "enabled": e.enabled, "label": e.label, "options": e.options[:10]}
+                                     for e in (obs.elements if obs else []) if e.role in INTERACTIVE_FOR_CONTEXT][:60],
+            "accessibility_snapshot_excerpt": (obs.snapshot_text or "")[:6000] if obs else None,
+            "screenshot": work.screenshot_after or work.screenshot_before,
+        }
+        try:
+            from backend.agents.governance.redaction import redact_value
+
+            ref = await self.artifacts.put_bytes(
+                self.execution_id, "failures", f"{step.id}-attempt{work.attempts}-{int(time.time() * 1000)}.json",
+                json.dumps(redact_value(context), indent=2, default=str).encode("utf-8"), "application/json")
+        except Exception as exc:  # pragma: no cover - evidence capture must never break recovery
+            log.warning("failure context capture failed", error=str(exc)[:200])
+            return None
+        work.failure_contexts.append(ref.uri)
+        if self.recorder is not None:
+            await self.recorder.artifact(ref, step.id)
+        return ref.uri
+
+    async def plan_recovery_with_model(self, step: Step, analysis: FailureAnalysis) -> dict[str, Any] | None:
+        """Deterministic strategies first; then (optionally) let the model pick one more from the closed list."""
+
+        plan = self.plan_recovery(step, analysis)
+        if plan is not None or not analysis.healable or not self.gateway.available:
+            return plan
+        work = self.ensure_work(step)
+        if work.llm_recovery_used >= self.settings.llm_recovery_attempts:
+            return None
+        if self.recoveries >= self.settings.recovery.max_test_recovery_cycles:
+            return None
+        allowed = [s for s in MODEL_RECOVERY_STRATEGIES if s not in work.tried_strategies]
+        if not allowed:
+            return None
+        work.llm_recovery_used += 1
+        obs = work.after or self.observation
+        candidates = "\n".join(f"- {c.display} (score {c.score:.2f})" for c in
+                                (work.decision.candidates[:6] if work.decision else []))
+        prompt = (f"A browser test step failed.\nStep: {step.original_text}\nAction: {step.action.value}\n"
+                  f"Failure: {analysis.category.value} - {analysis.root_cause}\n"
+                  f"Already tried (do not repeat): {', '.join(work.tried_strategies) or 'none'}\n"
+                  f"Grounding candidates:\n{candidates or '- none'}\n"
+                  f"Choose the single most promising recovery strategy from: {', '.join(allowed)}; "
+                  "or 'give_up' when the failure is a real product defect or cannot be fixed by retrying.")
+        try:
+            result = await self.gateway.structured(
+                tier=ModelTier.REASONING, system="You diagnose failed UI test steps. Never invent actions.",
+                prompt=prompt, output_model=RecoveryChoice, agent="root_cause_analyzer_agent",
+                untrusted=(obs.snapshot_text or "")[:8000] if obs else None, max_tokens=800)
+        except (ModelError, ModelUnavailable) as exc:
+            log.info("model-guided recovery unavailable", error=str(exc)[:160])
+            return None
+        choice = result.output
+        if choice.strategy not in allowed or choice.strategy == "give_up":
+            work.failed_strategies.append({"model_diagnosis": choice.diagnosis[:300], "decision": "give_up"})
+            return None
+        return {"strategy": choice.strategy, "rationale": f"model diagnosis: {choice.diagnosis[:300]}",
+                "category": analysis.category.value, "source": "model"}
 
     def plan_recovery(self, step: Step, analysis: FailureAnalysis) -> dict[str, Any] | None:
         work = self.ensure_work(step)
@@ -1184,14 +1284,16 @@ class ExecutionRuntime:
                         recovered=result.recovered, memory_used=result.memory_used, duration_ms=result.duration_ms)
         return result
 
-    def skip_remaining(self, step_ids: list[str]) -> None:
+    def skip_remaining(self, step_ids: list[str], because: Step | None = None) -> None:
+        reason = (f"not executed: depends on step {because.index} ({because.original_text[:60]}), which did not pass"
+                  if because is not None else "not executed (earlier step did not pass)")
         for sid in step_ids:
             step = self.steps_by_id.get(sid)
             if step is None or sid in self.results and self.results[sid].status != StepStatus.PENDING:
                 continue
             self.results[sid] = StepResult(step_id=sid, index=step.index, original_text=step.original_text,
                                            action=step.action.value, summary=step.summary(),
-                                           status=StepStatus.SKIPPED, message="not executed (earlier step did not pass)")
+                                           status=StepStatus.SKIPPED, message=reason)
 
     def compact_decision(self) -> dict[str, Any] | None:
         work = self.work

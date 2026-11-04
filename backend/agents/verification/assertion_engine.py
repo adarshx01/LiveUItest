@@ -19,7 +19,7 @@ from backend.agents.grounding.element_grounder import ElementGrounder, Grounding
 from backend.agents.grounding.text_match import contains_text, similarity
 from backend.agents.observation.page_observer import PageObserver
 from backend.agents.planner.variable_resolver import VariableResolver
-from backend.browser.js_probes import ELEMENT_STATE, VISIBLE_TEXT
+from backend.browser.js_probes import ELEMENT_STATE, SELECT_STATE, VISIBLE_TEXT
 from backend.browser.tool_adapter import BrowserToolAdapter
 from backend.core.exceptions import ModelError, ModelUnavailable
 from backend.core.ids import new_id
@@ -170,17 +170,20 @@ class AssertionEngine:
             el, conf = self._find(spec.target, obs, step, "select")
             if el is None:
                 return AssertionResult(**base, actual=None, status="FAILED", message="dropdown not found", evidence=ev)
-            actual = el.selected_options or ([el.value_preview] if el.value_preview else []) or [el.name or el.text]
-            if el.role == "combobox" and not el.options:
-                actual = [el.text or el.name]
+            # read the live control: refs captured before a postback/re-render are stale, and for an input-based
+            # combobox the accessible *name* is its label, not its value
+            actual = await self._live_selection(el)
             ok = any(similarity(str(expected), a or "") >= 0.95 or (a or "").strip().lower() == str(expected).lower()
                      for a in actual)
             return done(ok, actual, el.display())
         if t == AssertionType.INPUT_VALUE_EQUALS:
             el, conf = self._find(spec.target, obs, step, "fill")
-            if el is None or not el.ref:
+            handle = el.ref or el.css_selector if el is not None else None
+            if el is None or not handle:
                 return AssertionResult(**base, actual=None, status="FAILED", message="field not found", evidence=ev)
-            state = await self.adapter.probe(ELEMENT_STATE, el.ref, el.display()) or {}
+            state = await self.adapter.probe(ELEMENT_STATE, handle, el.display()) or {}
+            if not state and el.css_selector and handle != el.css_selector:
+                state = await self.adapter.probe(ELEMENT_STATE, el.css_selector, el.display()) or {}
             actual = state.get("value")
             if state.get("sensitive"):
                 return AssertionResult(**base, actual="••••••", status="INCONCLUSIVE",
@@ -227,6 +230,21 @@ class AssertionEngine:
                                                       f"'{expected}' was not found ({mode} match)"),
                                evidence=ev + [Evidence(source="visible_text", observation_id=obs.observation_id,
                                                        detail=detail)])
+
+    async def _live_selection(self, el: InventoryElement) -> list[str]:
+        """Current choice of a native select (selected options) or custom combobox (value / shown text)."""
+
+        for handle in dict.fromkeys(h for h in (el.ref, el.css_selector) if h):
+            state = await self.adapter.probe(SELECT_STATE, handle, el.display())
+            if isinstance(state, dict) and state.get("isSelect"):
+                return [str(s) for s in state.get("selected") or []]
+            info = await self.adapter.probe(ELEMENT_STATE, handle, el.display())
+            if isinstance(info, dict) and info:
+                shown = [v for v in (info.get("value"), info.get("text")) if v]
+                if shown:
+                    return [str(v).strip() for v in shown]
+        fallback = list(el.selected_options) or ([el.value_preview] if el.value_preview else [])
+        return fallback or ([el.text] if el.text and el.text != el.name else [])
 
     def _find(self, target: TargetSpec | None, obs: Observation, step: Step | None,
               action: str) -> tuple[InventoryElement | None, float]:

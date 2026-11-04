@@ -30,6 +30,8 @@ services:
       AITEST_DATABASE_URL: postgresql+asyncpg://aitest:aitest@postgres:5432/aitest
       AITEST_CHECKPOINT_DATABASE_URL: postgresql://aitest:aitest@postgres:5432/aitest
       AITEST_REDIS_URL: redis://redis:6379/0
+      AITEST_USE_REDIS: "true"
+      AITEST_SECRET_KEY_STORE: file
       AITEST_MCP_TRANSPORT: http
       AITEST_MCP_HTTP_URL: http://browser:8931/mcp
       AITEST_ARTIFACT_BACKEND: s3

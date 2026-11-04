@@ -109,7 +109,7 @@ def redact_value(value: Any, *, _depth: int = 0) -> Any:
         out: dict[Any, Any] = {}
         for key, item in value.items():
             if (isinstance(key, str) and is_sensitive_name(key) and isinstance(item, (str, int, float))
-                    and not isinstance(item, bool) and item != ""):
+                    and not isinstance(item, bool) and item != "" and not _platform_id(item)):
                 out[key] = MASK
             else:
                 out[key] = redact_value(item, _depth=_depth + 1)
@@ -163,3 +163,13 @@ def redact_html(document: str) -> str:
         last = match.end()
     out.append(clean(document[last:]))
     return "".join(out)
+
+
+_PLATFORM_ID = re.compile(r"^[a-z][a-z0-9]{1,15}_[0-9a-f]{12,40}$")
+
+
+def _platform_id(value: object) -> bool:
+    """The platform's own identifiers (``bs_1f…``, ``exec_a6…``) are not credentials: a key named
+    ``session_id`` holding one stays readable in logs, while a real session cookie/token stays masked."""
+
+    return isinstance(value, str) and bool(_PLATFORM_ID.match(value))

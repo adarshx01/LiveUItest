@@ -19,7 +19,7 @@ from backend.agents.grounding.locator_strategy import (
     StrategyResolution,
     resolve_strategy,
 )
-from backend.agents.grounding.text_match import split_identifier, strip_badge
+from backend.agents.grounding.text_match import similarity, split_identifier, strip_badge
 from backend.agents.planner.lexicon import (
     ACTION_ROLE_COMPAT,
     normalize_text,
@@ -129,7 +129,15 @@ def name_score(target: TargetSpec, el: InventoryElement) -> tuple[float, str]:
     best_pair = ("", "")
     for phrase, pw in _target_phrases(target):
         for text, tw in _element_texts(el):
-            s = match_score(phrase, text) * pw * tw
+            # an exact name ("the patient named Abc Xy", a quoted label) is data: never typo-repaired, so
+            # "Abcd Xy" does not pass for "Abc Xy"
+            scorer = similarity if target.exact_name else match_score
+            s = scorer(phrase, text) * pw * tw
+            np_, nt = normalize_text(phrase), normalize_text(text)
+            if len(np_.split()) >= 2 and nt.startswith(np_ + " "):
+                # a card / tile whose accessible name is its title followed by a description ("Patient Support
+                # Program Enrolled patients, ...") is named by its leading phrase: close to an exact match
+                s = max(s, 0.9 * pw * tw)
             if s > best:
                 best, why, best_pair = s, f"'{phrase}' ~ '{text[:40]}' ({s:.2f})", (phrase, text)
     if best_pair[0]:

@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from backend.agents.governance.redaction import MASK
+from backend.agents.governance.redaction import MASK, register_sensitive
 from backend.agents.governance.secret_manager import SecretManager, SecretScope
 from backend.agents.planner.requirement_analyzer import RequirementAnalyzer
 from backend.agents.planner.test_compiler import TestCompiler
@@ -166,13 +166,20 @@ class PlatformService:
         if self.secrets is None:
             return spec, source
         masked = source
+        vaulted: list[str] = []
         for step in spec.flat_steps():
             value = step.value
             if value is not None and value.sensitive and value.source == "literal" and value.value:
                 name = f"{test_case_id}_{step.id}"
                 await self.secrets.store(SecretScope(org_id, project_id), name, value.value)
+                register_sensitive(value.value)
+                vaulted.append(value.value)
                 masked = masked.replace(value.value, MASK)
                 value.source, value.reference, value.value = "secret", name, None
+        if vaulted:
+            # the instruction text of every step ("Enter S3cret!pass as Password") is stored, reported and
+            # checkpointed: it keeps its wording with the secret masked, the value lives only in the vault
+            spec = TestSpec.model_validate(_mask_strings(spec.model_dump(mode="json"), vaulted))
         if spec.secret_refs is not None:
             spec.secret_refs = sorted({s.value.reference for s in spec.flat_steps()
                                        if s.value and s.value.source == "secret" and s.value.reference})
@@ -252,3 +259,15 @@ class PlatformService:
 
 def now_utc() -> dt.datetime:
     return utcnow()
+
+
+def _mask_strings(data: Any, secrets: list[str]) -> Any:
+    if isinstance(data, str):
+        for secret in sorted(secrets, key=len, reverse=True):
+            data = data.replace(secret, MASK)
+        return data
+    if isinstance(data, list):
+        return [_mask_strings(item, secrets) for item in data]
+    if isinstance(data, dict):
+        return {key: _mask_strings(item, secrets) for key, item in data.items()}
+    return data

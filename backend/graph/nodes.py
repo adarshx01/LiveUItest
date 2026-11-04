@@ -536,6 +536,9 @@ async def classify_failure_node(state: TestExecutionState, config: RunnableConfi
     runtime = _runtime(state)
     step = _step(state)
     analysis = runtime.classify(step)
+    context_uri = await runtime.capture_failure_context(step)
+    if context_uri:
+        runtime.results[step.id].failure_contexts.append(context_uri)
     existing = state.get("failure_context") or {}
     if existing.get("category") == FailureCategory.CAPTCHA_DETECTED.value:
         analysis.category = FailureCategory.CAPTCHA_DETECTED
@@ -550,7 +553,7 @@ async def recovery_planner(state: TestExecutionState, config: RunnableConfig | N
     runtime = _runtime(state)
     step = _step(state)
     analysis = runtime.ensure_work(step).analysis
-    plan = runtime.plan_recovery(step, analysis) if analysis is not None else None
+    plan = await runtime.plan_recovery_with_model(step, analysis) if analysis is not None else None
     return {"phase": "recovery_planned" if plan else "recovery_exhausted", "recovery_plan": plan}
 
 
@@ -656,10 +659,19 @@ async def fail_step(state: TestExecutionState, config: RunnableConfig | None = N
                                             root_cause=context.get("root_cause", ""), evidence=evidence,
                                             failed_strategies=work.failed_strategies, attempts=work.recovery_cycles)
     remaining = [sid for sid in (state.get("queue") or [])]
+    if (status == StepStatus.FAILED and step.action == ActionType.ASSERT and remaining
+            and runtime.settings.continue_on_failure == "assertions" and runtime.session is not None):
+        # a failed check changed nothing in the application: the following steps are still valid, so keep
+        # executing them (the test outcome stays FAILED); a failed *action* stops its dependents below
+        await event_bus.publish(runtime.execution_id, "EXECUTION_CONTINUES",
+                                f"step {step.index} check failed; continuing with independent steps",
+                                step_id=step.id)
+        return {"phase": "step_failed_continue", "step_results": _results_dict(runtime),
+                "failure_context": None, "recovery_attempts": 0}
     flat_remaining: list[str] = []
     for sid in remaining:
         flat_remaining.extend(s.id for s in runtime.step(sid).iter_flat())
-    runtime.skip_remaining(flat_remaining)
+    runtime.skip_remaining(flat_remaining, because=step)
     return {"phase": "step_failed", "queue": [], "step_results": _results_dict(runtime),
             "blocked_reason": message if status == StepStatus.BLOCKED else state.get("blocked_reason")}
 

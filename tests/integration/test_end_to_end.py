@@ -53,16 +53,19 @@ def demo_app():
 
 @pytest.fixture(scope="session")
 async def platform(demo_app):
-    if not _port_open(5432):
-        pytest.skip("PostgreSQL not available")
+    settings = get_settings()
+    if settings.database_url.startswith("postgres") and not _port_open(5432):
+        pytest.skip("PostgreSQL configured but not available")
     if not get_settings().mcp_server_script.exists():
         pytest.skip("Playwright MCP not installed (cd browser/playwright-mcp && npm ci)")
     from backend.bootstrap import bootstrap
 
     pf = await bootstrap(json_logs=False)
+    from backend.models.database import clear_tables
+
     async with pf.sessionmaker() as session:
-        await session.execute(text("TRUNCATE locator_memory, page_memory, failure_memory, memory_versions, "
-                                   "test_execution_memory"))
+        await clear_tables(session, ("locator_memory", "page_memory", "failure_memory", "memory_versions",
+                                     "test_execution_memory"))
         await session.commit()
     yield pf
     await pf.engine.stop()
@@ -85,15 +88,46 @@ async def _assert_secret_not_leaked(platform, result, secret: str) -> None:
     html = Path(result.report).read_text(encoding="utf-8")
     assert secret not in _DATA_URI.sub("", html), "secret value rendered in the HTML report"
     assert secret not in (Path(result.report).parent / "report.json").read_text(encoding="utf-8")
-    needle = {"needle": f"%{secret}%", "eid": result.execution_id}
     async with platform.sessionmaker() as session:
-        queries = [f"SELECT count(*) FROM {t} t WHERE t.execution_id = :eid AND t::text LIKE :needle"
-                   for t in _RUN_TABLES]
-        queries += [f"SELECT count(*) FROM {t} t WHERE t::text LIKE :needle" for t in _MEMORY_TABLES]
-        queries.append("SELECT count(*) FROM execution_runs t WHERE t.id = :eid AND t::text LIKE :needle")
-        for query in queries:
-            hits = (await session.execute(text(query), needle)).scalar_one()
-            assert hits == 0, f"secret value persisted: {query.split(' FROM ')[1].split()[0]}"
+        for table in _RUN_TABLES:
+            assert not await _rows_contain(session, table, secret, "execution_id = :eid", result.execution_id), \
+                f"secret value persisted: {table}"
+        for table in _MEMORY_TABLES:
+            assert not await _rows_contain(session, table, secret), f"secret value persisted: {table}"
+        assert not await _rows_contain(session, "execution_runs", secret, "id = :eid", result.execution_id)
+
+
+async def _rows_contain(session, table: str, needle: str, where: str | None = None, eid: str | None = None) -> bool:
+    """Portable leak scan (SQLite and PostgreSQL): stringify every column of the matching rows."""
+
+    query = f'SELECT * FROM "{table}"' + (f" WHERE {where}" if where else "")
+    rows = (await session.execute(text(query), {"eid": eid} if eid else {})).all()
+    return any(needle in str(tuple(row)) for row in rows)
+
+
+def _checkpoint_contains(thread_id: str, needle: str) -> bool:
+    """Search the LangGraph checkpoints of one execution for a value (both checkpointer backends)."""
+
+    import sqlite3
+
+    url = get_settings().resolved_checkpoint_url()
+    raw = needle.encode("utf-8")
+    if url.startswith("sqlite"):
+        conn = sqlite3.connect(url.split("///", 1)[1])
+        try:
+            rows = conn.execute("SELECT checkpoint, metadata FROM checkpoints WHERE thread_id = ?", (thread_id,)).fetchall()
+            rows += conn.execute("SELECT value, value FROM writes WHERE thread_id = ?", (thread_id,)).fetchall()
+        finally:
+            conn.close()
+        return any(raw in (v if isinstance(v, bytes) else str(v).encode()) for row in rows for v in row if v)
+    import psycopg
+
+    with psycopg.connect(url) as conn:
+        hits = conn.execute(
+            "SELECT count(*) FROM checkpoint_blobs WHERE thread_id = %s AND position(%s in blob) > 0 "
+            "UNION ALL SELECT count(*) FROM checkpoint_writes WHERE thread_id = %s AND position(%s in blob) > 0",
+            (thread_id, raw, thread_id, raw)).fetchall()
+    return any(h[0] for h in hits)
 
 
 async def test_login_learn_replay_heal_and_fail(platform):
@@ -188,12 +222,7 @@ async def test_rerun_steps_retry_and_compare(platform, demo_app):
     assert full.outcome == "PASSED", full.reason
     assert full.options["dataset"] == {"username": "alice@example.com", "display_name": "Alice Smith"}
     assert "Alice#2024" not in json.dumps(full.options), "credential stored in clear on the run record"
-    async with platform.sessionmaker() as session:
-        leaked = (await session.execute(text(
-            "SELECT count(*) FROM checkpoint_blobs WHERE thread_id = :t AND position(convert_to(:s, 'UTF8') in blob) > 0"
-            " UNION ALL SELECT count(*) FROM checkpoint_writes WHERE thread_id = :t "
-            "AND position(convert_to(:s, 'UTF8') in blob) > 0"), {"t": full.id, "s": "Alice#2024"})).scalars().all()
-    assert not any(leaked), "credential persisted in the LangGraph checkpoints"
+    assert not _checkpoint_contains(full.id, "Alice#2024"), "credential persisted in the LangGraph checkpoints"
 
     redirect = next(s for s in full_steps if "redirected to the dashboard" in s["original_text"])
     partial, partial_steps = await finished(await routes.rerun_steps(
@@ -211,3 +240,28 @@ async def test_rerun_steps_retry_and_compare(platform, demo_app):
     assert comparison["same_version"] and comparison["counts"]["regressions"] == 0
     not_run = [r for r in comparison["steps"] if r["changes"] == ["not run in the compared execution"]]
     assert len(not_run) == len(full_steps) - len(partial_steps)
+
+
+async def test_inline_password_is_vaulted_and_never_stored(platform, tmp_path):
+    """A password typed straight into the test text ("Enter X as Password") must work, and must not be
+    stored anywhere in clear: test definition, step records, run tables, checkpoints, report."""
+
+    password = "CareDemo#2026"
+    case = tmp_path / "inline_password.txt"
+    case.write_text("http://127.0.0.1:8800/care/sign-in\n"
+                    "Enter care.user@example.com as Email\n"
+                    f"Enter {password} as Password\n"
+                    "Click on Login button\n"
+                    "Click on Patient Support Program\n"
+                    "Verify that \"Abc Xy\" is displayed\n", encoding="utf-8")
+    result = await run_scenario(platform, Scenario("inline password", str(case), "PASSED",
+                                                   ["care-email", "care-password", "care-login", "care-psp"]))
+    assert result.outcome == "PASSED", result.reason
+    await _assert_secret_not_leaked(platform, result, password)
+    assert not _checkpoint_contains(result.execution_id, password), "inline password reached the checkpoints"
+    async with platform.sessionmaker() as session:
+        for table in ("test_case_versions", "test_steps", "execution_steps"):
+            assert not await _rows_contain(session, table, password), f"inline password stored in {table}"
+        masked = (await session.execute(text("SELECT original_text FROM test_steps WHERE original_text LIKE "
+                                             "'%as Password'"))).scalars().all()
+        assert masked and all("••••••" in t for t in masked)

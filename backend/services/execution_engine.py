@@ -40,7 +40,7 @@ class RunHandle:
 
 
 class ExecutionEngine:
-    def __init__(self, *, checkpointer: str = "postgres", platform: Any = None) -> None:
+    def __init__(self, *, checkpointer: str = "auto", platform: Any = None) -> None:
         self.checkpointer_kind = checkpointer
         self.handle = CheckpointerHandle()
         self.graph: Any = None
@@ -49,7 +49,7 @@ class ExecutionEngine:
         self._semaphore = asyncio.Semaphore(get_settings().max_concurrent_executions)
 
     async def start(self) -> None:
-        saver = await self.handle.open_postgres() if self.checkpointer_kind == "postgres" else self.handle.open_memory()
+        saver = await self.handle.open(self.checkpointer_kind)
         self.graph = compile_graph(saver)
 
     async def stop(self) -> None:

@@ -396,6 +396,18 @@ POPUP_OPTIONS = Probe("popup_options", r"""(trigger) => {
     // innermost containers only
     containers = containers.filter(c => !containers.some(o => o !== c && c.contains(o) && o.querySelector(OPT + ',li,[data-value]')));
   }
+  if (!containers.length) {
+    // class names say nothing ("soup-list", "x7f2"): a floating panel (absolute / fixed, stacked above the page)
+    // right next to the trigger, holding two or more short text items, is the popup it opened
+    source = 'floating-panel';
+    const near = (e) => { const r = e.getBoundingClientRect();
+      return r.top < tr.bottom + 420 && r.bottom > tr.top - 420 && r.left < tr.right + 60 && r.right > tr.left - 60; };
+    const items = (e) => Array.from(e.children).filter(k => visible(k) && textOf(k) && textOf(k).length < 120);
+    containers = all.filter(e => e !== trigger && !e.contains(trigger) && visible(e) && near(e) &&
+      /^(absolute|fixed)$/.test(getComputedStyle(e).position) && items(e).length >= 2 &&
+      !e.querySelector('input:not([type=hidden]),textarea,select,[role=tab],[role=tabpanel]'));
+    containers = containers.filter(c => !containers.some(o => o !== c && c.contains(o)));
+  }
   const dist = (c) => { const r = c.getBoundingClientRect(); return Math.abs(r.top - tr.bottom) + Math.abs(r.left - tr.left) * 0.5; };
   containers.sort((a, b) => dist(a) - dist(b));
   const optionsIn = (c) => {
@@ -444,6 +456,95 @@ SCROLL_LIST = Probe("scroll_list", r"""(el) => {
   return {scrolled: c.scrollTop !== before, atEnd: c.scrollTop + c.clientHeight >= c.scrollHeight - 2,
           top: Math.round(c.scrollTop), height: c.scrollHeight, client: c.clientHeight};
 }""", element=True, mutates_view=True)
+
+
+# Custom date pickers: the calendar a trigger opened, its month/year header, navigation and day cells.
+CALENDAR_STATE = Probe("calendar_state", r"""(trigger) => {
+""" + _DEEP_JS + _CSS_PATH_JS + _LABEL_JS + r"""
+  const visible = (e) => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none' && parseFloat(st.opacity || '1') > 0.02; };
+  const cls = (e) => (typeof e.className === 'string' ? e.className : (e.className && e.className.baseVal) || '');
+  const MONTHS = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+  const monthOf = (t) => { t = (t || '').toLowerCase(); for (let i = 0; i < 12; i++) if (new RegExp('\\b' + MONTHS[i].slice(0, 3)).test(t)) return i + 1; return null; };
+  const all = deepElements(document.body, 20000);
+  const dayCells = (c) => Array.from(c.querySelectorAll('button,td,[role="gridcell"],[role="button"],a,span,div'))
+    .filter(e => visible(e) && /^\d{1,2}$/.test(textOf(e)) && !Array.from(e.children).some(k => /^\d{1,2}$/.test(textOf(k))));
+  let containers = all.filter(e => visible(e) && e !== trigger && !e.contains(trigger) &&
+    (e.getAttribute('role') === 'grid' || e.getAttribute('role') === 'dialog' ||
+     /calendar|datepicker|date-picker|daypicker|flatpickr|picker-panel|picker-dropdown|ui-datepicker|mat-calendar|pickers/i.test(cls(e))));
+  containers = containers.filter(c => dayCells(c).length >= 28);
+  containers = containers.filter(c => !containers.some(o => o !== c && c.contains(o)));  // innermost
+  if (!containers.length) return {found: false};
+  const tr = trigger.getBoundingClientRect();
+  containers.sort((a, b) => { const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+    return Math.abs(ra.top - tr.bottom) + Math.abs(ra.left - tr.left) - Math.abs(rb.top - tr.bottom) - Math.abs(rb.left - tr.left); });
+  let cal = containers[0];
+  // widen to the picker that also holds the header and navigation buttons
+  for (let up = cal.parentElement, i = 0; up && i < 3; up = up.parentElement, i++) {
+    if (/\b(19|20)\d{2}\b/.test(textOf(up).slice(0, 400)) && up.querySelectorAll('button,[role="button"],a').length >= 2) { cal = up; break; }
+  }
+  let month = null, year = null, header = '';
+  for (const e of cal.querySelectorAll('h1,h2,h3,h4,h5,[role="heading"],[aria-live],button,span,div,caption,strong,th')) {
+    const t = textOf(e); if (t.length > 40 || !visible(e)) continue;
+    const y = t.match(/\b(19|20)\d{2}\b/); const m = monthOf(t);
+    if (y && m) { month = m; year = parseInt(y[0], 10); header = t; break; }
+  }
+  const selects = Array.from(cal.querySelectorAll('select')).filter(visible);
+  const monthSelect = selects.find(sel => Array.from(sel.options).some(o => monthOf(o.text)));
+  const yearSelect = selects.find(sel => Array.from(sel.options).some(o => /^(19|20)\d{2}$/.test(o.text.trim())));
+  if (monthSelect && month === null) month = monthOf(monthSelect.selectedOptions[0] && monthSelect.selectedOptions[0].text);
+  if (yearSelect && year === null) year = parseInt(yearSelect.value, 10) || null;
+  // navigation controls: never a day cell ("next-month" outside days) nor the header row that holds the title
+  const isBtn = (e) => /^(BUTTON|A)$/.test(e.tagName) || e.getAttribute('role') === 'button';
+  const navs = Array.from(cal.querySelectorAll('button,[role="button"],a,span,div,i,svg'))
+    .filter(e => visible(e) && e.children.length <= 2 && !/^\d{1,2}$/.test(textOf(e)) && !/\b(19|20)\d{2}\b/.test(textOf(e)))
+    .sort((a, b) => (isBtn(b) ? 1 : 0) - (isBtn(a) ? 1 : 0));
+  const navText = (e) => ((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('title') || '') + ' ' + textOf(e) + ' ' + cls(e)).toLowerCase();
+  const prev = navs.find(e => /prev|previous|back|‹|«|❮|<|chevron-left|arrow-left/.test(navText(e)) && !/year/.test(navText(e)) && textOf(e).length < 20);
+  const next = navs.find(e => /next|forward|›|»|❯|>|chevron-right|arrow-right/.test(navText(e)) && !/year/.test(navText(e)) && textOf(e).length < 20);
+  const days = dayCells(cal).slice(0, 62).map(e => {
+    const c = cls(e) + ' ' + cls(e.parentElement || e);
+    const r = e.getBoundingClientRect();
+    return {day: parseInt(textOf(e), 10), css: cssPath(e), label: e.getAttribute('aria-label') || e.getAttribute('title') || '',
+            outside: /outside|other-month|prev-month|next-month|adjacent|not-in-month|--outside|\bold\b|\bnew\b|disabled-date|muted/i.test(c),
+            disabled: e.disabled || e.getAttribute('aria-disabled') === 'true' || /disabled/i.test(cls(e)),
+            box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]};
+  });
+  return {found: true, header, month, year, prev: prev ? cssPath(prev) : null, next: next ? cssPath(next) : null,
+          monthSelect: monthSelect ? cssPath(monthSelect) : null, yearSelect: yearSelect ? cssPath(yearSelect) : null,
+          monthOptions: monthSelect ? Array.from(monthSelect.options).map(o => o.text.trim()) : [],
+          yearOptions: yearSelect ? Array.from(yearSelect.options).map(o => o.text.trim()) : [], days};
+}""", element=True)
+
+# Custom time pickers: hour / minute (/ AM-PM) fields or columns near the trigger, and the confirm button.
+TIME_FIELDS = Probe("time_fields", r"""(trigger) => {
+""" + _DEEP_JS + _CSS_PATH_JS + _LABEL_JS + r"""
+  const visible = (e) => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
+  const cls = (e) => (typeof e.className === 'string' ? e.className : '');
+  const tr = trigger.getBoundingClientRect();
+  const near = (e) => { const r = e.getBoundingClientRect(); return Math.abs(r.top - tr.bottom) < 420 && Math.abs(r.left - tr.left) < 520; };
+  const all = deepElements(document.body, 20000).filter(e => visible(e) && near(e) && e !== trigger);
+  const describe = (e) => [e.getAttribute('aria-label'), e.getAttribute('placeholder'), e.getAttribute('name'), e.id,
+                           labelFor(e), inferLabel(e), e.getAttribute('title'), cls(e)].filter(Boolean).join(' ').toLowerCase();
+  const fields = all.filter(e => /^(INPUT|SELECT)$/.test(e.tagName) || e.getAttribute('role') === 'spinbutton')
+    .filter(e => !/^(checkbox|radio|hidden|submit|button)$/i.test(e.getAttribute('type') || ''))
+    .map(e => ({css: cssPath(e), tag: e.tagName.toLowerCase(), type: (e.getAttribute('type') || '').toLowerCase(),
+                text: describe(e), value: e.value || '',
+                options: e.tagName === 'SELECT' ? Array.from(e.options).map(o => o.text.trim()) : []}));
+  // a date field next to the time field ("dd/mm/yyyy") must not be mistaken for the minutes box
+  const pick = (re) => fields.find(f => re.test(f.text) && !/yyyy|\bdd\b|date|calendar/.test(f.text));
+  const hour = pick(/(^|[^a-z])(hh|hours?|hr)([^a-z]|$)/), minute = pick(/(^|[^a-z])(mm|min|mins|minutes?)([^a-z]|$)/);
+  const ampm = pick(/am\s*\/?\s*pm|meridiem|period/);
+  // column pickers (lists of 00..23 and 00..59)
+  const columns = all.filter(e => /^(UL|DIV|OL)$/.test(e.tagName) && e.children.length >= 12 &&
+      Array.from(e.children).slice(0, 12).every(k => /^\d{1,2}$/.test(textOf(k))))
+    .map(col => Array.from(col.children).map(k => ({text: textOf(k), css: cssPath(k)})));
+  const ok = all.filter(e => (/^(BUTTON|A)$/.test(e.tagName) || e.getAttribute('role') === 'button') &&
+                             /^(ok|done|set|apply|confirm|save time|select)$/i.test(textOf(e)));
+  return {fields, hour: hour || null, minute: minute || null, ampm: ampm || null, columns: columns.slice(0, 3),
+          confirm: ok.length ? cssPath(ok[0]) : null};
+}""", element=True)
 
 
 def fnv1a(text: str) -> str:
@@ -513,5 +614,5 @@ def scroll_into_view_probe() -> Probe:
 STATIC_PROBES: dict[str, Probe] = {p.name: p for p in (DOM_INVENTORY, PAGE_SIGNALS, VISIBLE_TEXT, PAGE_INFO,
                                                         ELEMENT_STATE, VALUE_FINGERPRINT, SCROLL_INFO,
                                                         MASK_SENSITIVE_FIELD, SELECT_STATE, INPUT_STATE,
-                                                        POPUP_OPTIONS, SCROLL_LIST)}
+                                                        POPUP_OPTIONS, SCROLL_LIST, CALENDAR_STATE, TIME_FIELDS)}
 PROBE_NAMES = set(STATIC_PROBES) | {"find_text", "element_at_point", "scroll_by", "scroll_edge", "scroll_into_view"}

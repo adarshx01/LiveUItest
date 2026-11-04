@@ -43,8 +43,8 @@ class EventBus:
             return self._redis
         self._redis_checked = True
         settings = get_settings()
-        if not settings.use_redis:
-            return None
+        if not settings.redis_enabled:
+            return None  # local-first: events are delivered in-process (WebSockets of this API process)
         try:
             import redis.asyncio as aioredis
 

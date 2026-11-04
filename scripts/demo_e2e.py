@@ -21,9 +21,9 @@ import shutil
 import sys
 from pathlib import Path
 
-from sqlalchemy import text
 
 from backend.bootstrap import bootstrap
+from backend.models.database import clear_tables
 from backend.evaluation.benchmark import (
     catalogue_scenarios,
     login_scenarios,
@@ -46,7 +46,7 @@ async def main(include_catalogue: bool) -> int:
     platform = await bootstrap(json_logs=False)
     try:
         async with platform.sessionmaker() as session:  # clean memory so run 1 is a genuine first run
-            await session.execute(text(f"TRUNCATE {', '.join(MEMORY_TABLES)}"))
+            await clear_tables(session, MEMORY_TABLES)
             await session.commit()
         scenarios = login_scenarios() + (catalogue_scenarios() if include_catalogue else [])
         results = []

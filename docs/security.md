@@ -55,6 +55,38 @@ see the real page. It is redacted when it crosses a boundary.
 of the login and OTP scenarios appear nowhere in the HTML/JSON report, in the run's rows of every
 run table, or in any memory table.
 
+## Encryption key and credentials
+
+The secret store and the sealed part of run data sets are encrypted with one Fernet key. Lookup order:
+
+1. `AITEST_SECRET_KEY` (servers, docker compose: every process must share one key). An invalid value
+   stops start-up with a message that shows how to generate a valid one - it is never silently replaced.
+2. An existing `data/secret.key` (installations created before the key store existed keep working).
+3. The OS credential store via `keyring` (Windows Credential Manager, macOS Keychain, Secret Service),
+   service `ai-testing-platform`. A key is created there on first use. `AITEST_SECRET_KEY_STORE=file`
+   disables this.
+4. Otherwise a new `data/secret.key`, restricted to the current user (`chmod 600`, or an `icacls` ACL on
+   Windows).
+
+`python -m backend.cli doctor` reports which source is in use without printing the key.
+
+**Credentials in test cases.** Reference them as `{{name}}` and pass them with `--secret name=value` (or
+the UI's secret store). A password written inline ("Enter Pa55word as Password") is still protected:
+when the test is saved, the value is moved into the secret store, registered for redaction, and replaced
+by a mask in the stored source, in every step's instruction text and in the compiled plan. Only the
+compiled plan reaches the execution state, so the value never enters checkpoints, reports, events or
+memory. The integration suite asserts this for the replica scenario.
+
+**Model provider keys** (`ANTHROPIC_API_KEY`, `AZURE_OPENAI_API_KEY`, `AITEST_OPENAI_API_KEY`) are read
+from the environment or `.env`, registered for redaction at start-up and never logged; provider errors
+are rewritten into actionable messages with the key masked. A key that was ever pasted into a chat,
+ticket, screenshot or commit must be regenerated at the provider (Azure portal -> resource -> *Keys and
+Endpoint* -> *Regenerate*), not just removed from the file.
+
+**Identifiers vs. secrets.** Keys such as `session_id` are credential-shaped and masked - except when the
+value is one of the platform's own identifiers (`bs_<hex>`, `exec_<hex>`), which carry no authority and
+are needed to correlate logs. A real session cookie or token under the same key is still masked.
+
 ## Isolation and audit
 
 One isolated (in-memory profile) browser context per execution, own workspace for uploads/downloads,

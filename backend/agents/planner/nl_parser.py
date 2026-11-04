@@ -84,6 +84,7 @@ class ParseContext:
     last_values: dict[str, ValueSpec] = field(default_factory=dict)  # purpose -> value used
     step_counter: int = 0
     has_navigated: bool = False
+    chosen_options: list[str] = field(default_factory=list)  # options picked earlier in this test, in order
 
 
 @dataclass
@@ -127,6 +128,7 @@ class StepParser:
             self._rule_search_for,
             self._rule_fill_form,
             self._rule_fill,
+            self._rule_named,
             self._rule_select,
             self._rule_open_page,
             self._rule_logout_login_bare,
@@ -154,6 +156,11 @@ class StepParser:
         return ParsedLine([], 0.0, "no rule matched")
 
     def _parse_line(self, line: str, raw_line: str, ctx: ParseContext) -> ParsedLine:
+        # phrasings that contain "and" but describe ONE interaction run before compound splitting
+        for rule in (self._rule_click_and_select, self._rule_time_fields, self._rule_check_on_tab):
+            result = rule(line, ctx)
+            if result is not None:
+                return result
         if not re.match(r"^if\b", line, re.IGNORECASE):
             compound = self._parse_compound(line, raw_line, ctx)
             if compound is not None:
@@ -189,6 +196,110 @@ class StepParser:
         for step in steps:
             step.original_text = raw_line.strip()
         return ParsedLine(steps, min(confidences) * 0.97, "compound instruction")
+
+    # ------------------------------------------------------------------ one-interaction phrasings
+    def _rule_click_and_select(self, line: str, ctx: ParseContext) -> ParsedLine | None:
+        """"Click on Theme Box and select Initial Call" / "Open the Status dropdown and choose Not reachable"."""
+
+        m = re.match(r"^(?:click|tap|press|open|expand)\s+(?:on\s+)?(?:the\s+)?(?P<target>.+?)\s+and\s+"
+                     r"(?:then\s+)?(?:select|choose|pick|set)\s+(?:the\s+)?(?:option\s+)?(?:to\s+)?(?P<opt>.+)$",
+                     line, re.IGNORECASE)
+        if not m:
+            return None
+        option = strip_quotes(m.group("opt"))
+        said = strip_quotes(m.group("target")).strip()
+        label = re.sub(r"\s+(?:box|field|selection|selector|picker|dropdown|drop-down|drop down|list)$", "", said,
+                       flags=re.IGNORECASE).strip() or said
+        target = build_target(label, "select")
+        # the control is labelled "Theme", not "Theme Box": the label leads, the full wording stays a hint
+        target.intent = label
+        target.semantic_hints = list(dict.fromkeys([label, said, *target.semantic_hints]))[:14]
+        # a "box"/"selection" that one opens and picks from is a list or a picker, whatever its markup
+        target.preferred_roles = ["combobox", "listbox", "button", "textbox", "generic"]
+        target.option_text = option
+        step = self._step(ctx, line, ActionType.SELECT, 0.93, target=target, value=parse_value(m.group("opt"), ctx),
+                          risk_hint="input", expected_postcondition="selected option matches",
+                          notes=["open_then_choose"])
+        ctx.chosen_options.append(option)
+        return ParsedLine([step], 0.93, "open control and choose option")
+
+    def _rule_time_fields(self, line: str, ctx: ParseContext) -> ParsedLine | None:
+        """"Select Start Time and set the first field as 23 HH and second field as 15 MM" -> time 23:15."""
+
+        m = re.match(r"^(?:select|set|enter|choose|open|click(?:\s+on)?)\s+(?:the\s+)?(?P<target>.+?)\s*(?:,|and)?\s+"
+                     r"(?:then\s+)?set\s+(?:the\s+)?(?:first|1st|hour|hours)\s*(?:field|box|input)?\s+(?:as|to)\s+"
+                     r"(?P<h>\d{1,2})\s*(?:hh|hours?|hrs?|h)?\s*(?:,|and)?\s*(?:the\s+)?(?:second|2nd|minute|minutes)\s*"
+                     r"(?:field|box|input)?\s+(?:as|to)\s+(?P<m>\d{1,2})\s*(?:mm|minutes?|mins?|m)?"
+                     r"(?:\s*(?:,|and)?\s*(?:the\s+)?(?:third|3rd|am\s*/\s*pm|meridiem)\s*(?:field)?\s+(?:as|to)\s+"
+                     r"(?P<ampm>am|pm))?$", line, re.IGNORECASE)
+        if not m:
+            return None
+        hour, minute = int(m.group("h")), int(m.group("m"))
+        if m.group("ampm"):
+            hour = hour % 12 + (12 if m.group("ampm").lower() == "pm" else 0)
+        if hour > 23 or minute > 59:
+            return None
+        target = build_target(m.group("target"), "fill")
+        target.preferred_roles = ["textbox", "combobox", "button", "spinbutton", "generic"]
+        value = ValueSpec(source="literal", value=f"{hour:02d}:{minute:02d}")
+        step = self._step(ctx, line, ActionType.FILL, 0.93, target=target, value=value, risk_hint="input",
+                          expected_postcondition="time is set", notes=["time_parts"])
+        return ParsedLine([step], 0.93, "time entered field by field")
+
+    def _rule_check_on_tab(self, line: str, ctx: ParseContext) -> ParsedLine | None:
+        """"Check whether new Interaction for patient Abc is added on the Interaction Logs tab": open the tab,
+        then verify the entity is listed together with what this test recorded."""
+
+        m = re.match(r"^(?:check|verify|ensure|confirm|validate)\s+(?:whether|that|if)\s+(?P<claim>.+?)\s+"
+                     r"(?:is|are|was|were|has\s+been|have\s+been|gets?|got)\s+(?:successfully\s+)?"
+                     r"(?P<state>added|created|listed|shown|displayed|present|visible|recorded|saved|logged|updated)\s+"
+                     r"(?:on|in|under|to)\s+(?:the\s+)?(?P<where>.+?)\s+(?P<kind>tab|section|page|list|table|grid|panel)$",
+                     line, re.IGNORECASE)
+        if not m:
+            return None
+        where, kind = strip_quotes(m.group("where")).strip(), m.group("kind").lower()
+        claim = m.group("claim").strip()
+        steps: list[Step] = []
+        if kind in ("tab", "section", "panel", "page"):
+            nav = TargetSpec(intent=where, preferred_roles=["tab", "link", "button", "menuitem"],
+                             semantic_hints=[where, f"{where} {kind}"], element_kind=kind if kind == "tab" else None)
+            steps.append(self._step(ctx, line, ActionType.CLICK, 0.9, target=nav, risk_hint="navigation",
+                                    notes=["open_view_for_check"]))
+        entity = _entity_of(claim)
+        checks: list[AssertionSpec] = []
+        if entity:
+            checks.append(AssertionSpec(type=AssertionType.TEXT_VISIBLE, expected=entity, match="case_insensitive",
+                                        description=f"'{entity}' is listed in {where}"))
+        recorded = [o for o in ctx.chosen_options if not re.search(r"\d{2,}", o)][:3]
+        if recorded:
+            # the new record should show what this test entered (any one of the chosen values)
+            checks.append(AssertionSpec(type=AssertionType.ANY_OF, description="the new entry shows values chosen "
+                                        "earlier in this test", children=[
+                                            AssertionSpec(type=AssertionType.TEXT_VISIBLE, expected=o,
+                                                          match="case_insensitive") for o in recorded], derived=True))
+        if not checks:
+            return self._assertion_steps(line, f"{claim} is {m.group('state')}", ctx)
+        assertion = AssertionSpec(type=AssertionType.ALL_OF, description=f"{claim} is {m.group('state')} in {where}",
+                                  children=checks, timeout_ms=8000)
+        steps.append(self._step(ctx, line, ActionType.ASSERT, 0.88, assertion=assertion,
+                                notes=[f"semantic_claim:{claim} is {m.group('state')}"]))
+        return ParsedLine(steps, 0.88, "open view and verify the new entry")
+
+    def _rule_named(self, line: str, ctx: ParseContext) -> ParsedLine | None:
+        """"Select the Patient named Abc Xy" -> click the item whose text is exactly "Abc Xy"."""
+
+        m = re.match(r"^(?:select|choose|pick|open|click(?:\s+on)?|tap(?:\s+on)?)\s+(?:the\s+|a\s+|an\s+)?"
+                     r"(?P<kind>[A-Za-z][\w -]{1,30}?)\s+(?:named|called|titled|labell?ed|with\s+(?:the\s+)?name)\s+"
+                     r"(?P<name>.+)$", line, re.IGNORECASE)
+        if not m:
+            return None
+        name, kind = strip_quotes(m.group("name")).strip(), m.group("kind").strip()
+        target = TargetSpec(intent=name, exact_name=name, semantic_hints=[name, f"{kind} {name}"],
+                            preferred_roles=["link", "button", "row", "cell", "listitem", "option", "generic"],
+                            context_hint=None)
+        step = self._step(ctx, line, ActionType.CLICK, 0.92, target=target, risk_hint="navigation",
+                          notes=[f"entity_kind:{kind.lower()}"])
+        return ParsedLine([step], 0.92, "open named item")
 
     # ------------------------------------------------------------------ helpers
     def _step(self, ctx: ParseContext, line: str, action: ActionType, confidence: float, **kwargs: Any) -> Step:
@@ -641,6 +752,9 @@ class StepParser:
         if m:
             target_phrase, value_phrase = m.group("target"), m.group("value")
             verb = line.split()[0].lower()
+            if " as " in f" {line.lower()} " and _looks_like_data(target_phrase) and looks_like_field(value_phrase):
+                # "Enterjane.doe@example.com as Email", "Enter S3cret!pass as Password": value first, field last
+                target_phrase, value_phrase = value_phrase, target_phrase
             if verb == "set" and looks_like_choice(target_phrase) and not is_explicit_value(value_phrase):
                 return None  # "Set country to India" -> select rule
             if verb in ("add", "use", "put") and not looks_like_field(target_phrase):
@@ -682,6 +796,7 @@ class StepParser:
                 target.preferred_roles = ["combobox", "listbox", "radiogroup"]
             target.option_text = option
             value = parse_value(m.group("opt"), ctx)
+            ctx.chosen_options.append(option)
             step = self._step(ctx, line, ActionType.SELECT, 0.95, target=target, value=value, risk_hint="input",
                               expected_postcondition="selected option matches")
             return ParsedLine([step], 0.95, "select option from target")
@@ -764,6 +879,9 @@ class StepParser:
         phrase = m.group("target")
         expects_download = bool(re.search(r"\bto\s+download\b", phrase, re.IGNORECASE))
         phrase = re.sub(r"\s+to\s+download\b.*$", "", phrase, flags=re.IGNORECASE)
+        # "Click on Record Interaction to open sidebar": the clause says why, not what to click
+        phrase = re.sub(r"\s+(?:in\s+order\s+)?to\s+(?:open|close|show|display|view|expand|collapse|reveal|launch|"
+                        r"start|bring\s+up|go\s+to|navigate\s+to|see|load)\b.*$", "", phrase, flags=re.IGNORECASE) or phrase
         target = build_target(phrase, "click")
         risk = risk_for_text(target.exact_name or phrase) or "input"
         expects_nav = bool(target.purpose in ("submit_login", "submit_register", "logout", "checkout")
@@ -1299,3 +1417,26 @@ def parse_condition(text: str, ctx: ParseContext) -> tuple[ConditionSpec, float]
     if m:
         return ConditionSpec(kind="url_contains", expected=strip_quotes(m.group("v")), description=raw), 0.95
     return ConditionSpec(kind="text_visible", expected=raw, description=raw), 0.5
+
+
+def _looks_like_data(phrase: str | None) -> bool:
+    """An e-mail, a value with digits/symbols or a quoted literal - not the name of a field."""
+
+    raw = (phrase or "").strip()
+    if QUOTE_RE.fullmatch(raw) or VAR_RE.fullmatch(raw):
+        return True  # "{{care_email}}" is data even though its name mentions a field
+    text = strip_quotes(raw).strip()
+    if not text or looks_like_field(text):
+        return False
+    return bool(re.fullmatch(r"\S+@\S+\.\S+", text) or re.search(r"\d", text) or re.search(r"[!#$%^&*@]", text))
+
+
+def _entity_of(claim: str) -> str | None:
+    """The named thing a claim is about: "new Interaction for patient Abc" -> "Abc"."""
+
+    m = re.search(r"(?:\bfor|\bof|\bnamed|\bcalled|\bwith\s+name)\s+(?:the\s+)?(?:[a-z]+\s+)?"
+                  r"(?P<e>[\"'][^\"']+[\"']|[A-Z0-9][\w.@-]*(?:\s+[A-Z0-9][\w.@-]*)*)\s*$", claim)
+    if m:
+        return strip_quotes(m.group("e"))
+    quoted = QUOTE_RE.search(claim)
+    return strip_quotes(quoted.group(0)) if quoted else None

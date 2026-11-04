@@ -83,6 +83,8 @@ class DemoState:
         self.carts: dict[str, list[int]] = {}
         self.slow_ms = 0
         self.checkout_broken = True
+        self.care_sessions: dict[str, str] = {}
+        self.care_logs: dict[int, list[dict[str, Any]]] = {}
 
 
 STATE = DemoState()
@@ -399,6 +401,121 @@ async def api_items(offset: int = 0, limit: int = 20) -> JSONResponse:
     total = 100
     return JSONResponse({"items": [f"Item {i}" for i in range(offset + 1, min(total, offset + limit) + 1)],
                          "total": total})
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# /care: a patient-services portal shaped like the programme/interaction screens of a healthcare CRM. Sign-in,
+# programme list, patient table with near-duplicate names, tabs, and a "Record Interaction" drawer with three
+# kinds of custom dropdown, a calendar date picker and an HH / MM time popover. Interactions persist server-side.
+# The demo account is care.user@example.com / CareDemo#2026; DEMO_CARE_USERS ("email:password" pairs separated
+# by ";") adds more at start-up. Never put real credentials in code.
+
+PATIENTS = [
+    {"id": 101, "name": "Abc Xyz", "code": "PSP-00101", "enrolled": "12 Jan 2026", "status": "Active"},
+    {"id": 102, "name": "Abc Xy", "code": "PSP-00102", "enrolled": "03 Feb 2026", "status": "Active"},
+    {"id": 103, "name": "Bcd Ef", "code": "PSP-00103", "enrolled": "21 Mar 2026", "status": "On hold"},
+    {"id": 104, "name": "Abcd Xy", "code": "PSP-00104", "enrolled": "07 Apr 2026", "status": "Active"},
+]
+
+
+def care_users() -> dict[str, str]:
+    import os
+
+    users: dict[str, str] = {"care.user@example.com": "CareDemo#2026"}  # demo account, always present
+    for pair in os.environ.get("DEMO_CARE_USERS", "").split(";"):
+        email, sep, password = pair.strip().partition(":")
+        if sep and email:
+            users[email.strip().lower()] = password
+    return users
+
+
+def care_user(request: Request) -> str | None:
+    sid = request.cookies.get("care_sid")
+    return STATE.care_sessions.get(sid) if sid else None
+
+
+def care_render(name: str, request: Request, **ctx: Any) -> HTMLResponse:
+    html = TEMPLATES.get_template(f"care/{name}").render(request=request, care_user=care_user(request), **ctx)
+    return HTMLResponse(html)
+
+
+@app.get("/care", response_class=HTMLResponse)
+@app.get("/care/sign-in", response_class=HTMLResponse)
+async def care_sign_in(request: Request) -> Response:
+    if care_user(request):
+        return RedirectResponse("/care/home", status_code=303)
+    return care_render("signin.html", request, error=None, email="")
+
+
+@app.post("/care/sign-in", response_class=HTMLResponse)
+async def care_sign_in_submit(request: Request, email: str = Form(""), password: str = Form("")) -> Response:
+    await asyncio.sleep(0.4)  # a real authentication round trip
+    if care_users().get(email.strip().lower()) != password or not password:
+        return care_render("signin.html", request, error="Invalid email or password", email=email)
+    sid = f"c{len(STATE.care_sessions) + 1}{int(time.time() * 1000)}"
+    STATE.care_sessions[sid] = email.strip()
+    response = RedirectResponse("/care/home", status_code=303)
+    response.set_cookie("care_sid", sid, httponly=True, samesite="lax")
+    return response
+
+
+@app.get("/care/logout")
+async def care_logout(request: Request) -> Response:
+    STATE.care_sessions.pop(request.cookies.get("care_sid") or "", None)
+    response = RedirectResponse("/care/sign-in", status_code=303)
+    response.delete_cookie("care_sid")
+    return response
+
+
+@app.get("/care/home", response_class=HTMLResponse)
+async def care_home(request: Request) -> Response:
+    if not care_user(request):
+        return RedirectResponse("/care/sign-in", status_code=303)
+    return care_render("home.html", request)
+
+
+@app.get("/care/programs/psp", response_class=HTMLResponse)
+async def care_psp(request: Request) -> Response:
+    if not care_user(request):
+        return RedirectResponse("/care/sign-in", status_code=303)
+    return care_render("psp.html", request, patients=PATIENTS)
+
+
+@app.get("/care/patients/{patient_id}", response_class=HTMLResponse)
+async def care_patient(request: Request, patient_id: int) -> Response:
+    if not care_user(request):
+        return RedirectResponse("/care/sign-in", status_code=303)
+    patient = next((p for p in PATIENTS if p["id"] == patient_id), None)
+    if patient is None:
+        return HTMLResponse("patient not found", status_code=404)
+    return care_render("patient.html", request, patient=patient, logs=STATE.care_logs.get(patient_id, []))
+
+
+@app.post("/care/api/patients/{patient_id}/interactions")
+async def care_record(request: Request, patient_id: int) -> JSONResponse:
+    import datetime as dt
+
+    user = care_user(request)
+    patient = next((p for p in PATIENTS if p["id"] == patient_id), None)
+    if not user or patient is None:
+        return JSONResponse({"error": "not allowed"}, status_code=403)
+    body = await request.json()
+    required = ("theme", "status", "direction", "date", "time")
+    if any(not body.get(k) for k in required):
+        return JSONResponse({"error": "missing fields"}, status_code=422)
+    await asyncio.sleep(0.3)
+    day = dt.date.fromisoformat(body["date"])
+    log = {"patient": patient["name"], "theme": body["theme"], "status": body["status"],
+           "direction": body["direction"], "start_date": day.strftime("%d %b %Y"), "start_time": body["time"],
+           "iso_date": day.isoformat(), "notes": str(body.get("notes") or "")[:500], "recorded_by": user,
+           "recorded": time.strftime("%d %b %Y %H:%M")}
+    STATE.care_logs.setdefault(patient_id, []).insert(0, log)
+    return JSONResponse(log)
+
+
+@app.get("/care/api/patients/{patient_id}/interactions")
+async def care_logs(patient_id: int) -> JSONResponse:
+    return JSONResponse(STATE.care_logs.get(patient_id, []))
 
 
 def main() -> None:

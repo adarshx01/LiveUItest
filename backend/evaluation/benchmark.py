@@ -146,6 +146,18 @@ def catalogue_scenarios() -> list[Scenario]:
         Scenario("misspelt dropdown options", "typo_dropdowns.md", "PASSED",
                  ["ctl-country", "ctl-city", "ctl-languages", "ctl-submit"], [],
                  capability="'Selct Indai from the contry dropdown' -> India (typo-tolerant option matching)"),
+        Scenario("patient interaction: pickers + custom lists", "healthlink_interaction.md", "PASSED",
+                 ["care-login", "care-psp", "care-patient-102", "care-tab-interaction", "care-open-record",
+                  "care-theme-opt", "care-status-opt", "care-day", "care-hh", "care-mm", "care-time-set",
+                  "care-submit", "care-tab-logs"],
+                 ["care-patient-101", "care-patient-104", "care-pap"],
+                 variables={"care_email": "care.user@example.com"}, secrets={"care_password": "CareDemo#2026"},
+                 capability="calendar date picker, HH/MM time popover, ARIA-less list, portal listbox, "
+                            "exact patient among near-identical names"),
+        Scenario("failed check continues with independent steps", "continue_after_failed_check.md", "FAILED",
+                 ["care-login", "care-patient-102", "care-tab-logs"], ["care-patient-101"],
+                 variables={"care_email": "care.user@example.com"}, secrets={"care_password": "CareDemo#2026"},
+                 capability="a failed verification is reported and the run carries on (dependencies respected)"),
     ]
 
 

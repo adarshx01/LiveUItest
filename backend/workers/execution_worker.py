@@ -15,6 +15,11 @@ from backend.services.dispatcher import ExecutionDispatcher, worker_loop
 
 
 async def main() -> None:
+    from backend.core.config import get_settings
+
+    if not get_settings().redis_enabled:
+        raise SystemExit("The standalone worker consumes a Redis queue: set AITEST_USE_REDIS=true and "
+                         "AITEST_REDIS_URL. Locally you do not need it - the API runs executions in-process.")
     platform = await bootstrap()
     dispatcher = ExecutionDispatcher(platform.engine, platform.platform, platform.sessionmaker)
     worker_id = os.environ.get("AITEST_WORKER_ID") or f"{socket.gethostname()}-{os.getpid()}"

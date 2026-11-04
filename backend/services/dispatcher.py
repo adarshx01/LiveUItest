@@ -66,7 +66,9 @@ class ExecutionDispatcher:
                                          "options": run_options, "allowed_domains": allowed_domains})
         await self.audit(org_id, actor, "execution.start", "execution", run.id, {"test_case_id": tc.id})
         settings = get_settings()
-        if settings.run_worker_in_api:
+        if settings.run_worker_in_api or not settings.redis_enabled:
+            if not settings.run_worker_in_api:
+                log.warning("AITEST_RUN_WORKER_IN_API=false needs Redis (AITEST_REDIS_URL); running in-process")
             handle = self.engine.submit(state)
             self._watch(handle, org_id)
         else:

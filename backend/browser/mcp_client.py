@@ -62,8 +62,13 @@ class MCPConnection:
         width, height = self.options.viewport or s.viewport_size()
         launch: dict[str, Any] = {"headless": s.browser_headless if self.options.headless is None
                                   else self.options.headless}
-        if s.browser_executable_path and (self.options.browser_name or s.browser_name) == "chromium":
-            launch["executablePath"] = s.browser_executable_path
+        exe = s.browser_executable_path
+        if exe and (self.options.browser_name or s.browser_name) == "chromium":
+            if Path(exe).exists():
+                launch["executablePath"] = exe
+            else:  # e.g. a Linux path on Windows: use the browser Playwright installed instead of failing
+                log.warning("AITEST_BROWSER_EXECUTABLE_PATH does not exist; using Playwright's Chromium",
+                            path=exe)
         if s.browser_no_sandbox:
             launch["chromiumSandbox"] = False
         context: dict[str, Any] = {"viewport": {"width": width, "height": height}, "acceptDownloads": True}
