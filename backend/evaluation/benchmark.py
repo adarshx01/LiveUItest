@@ -116,6 +116,12 @@ def catalogue_scenarios() -> list[Scenario]:
                  capability="instruction-like page text ignored and reported"),
         Scenario("missing required field", "profile_missing_required.md", "FAILED", ["p-name", "p-save"], [],
                  capability="native validation failure reported precisely"),
+        Scenario("autocomplete", "autocomplete.md", "PASSED", ["ac-input", "ac-option"], [],
+                 capability="debounced suggestions picked by exact label"),
+        Scenario("responsive mobile layout", "responsive_mobile.md", "PASSED", ["hamburger", "menu-contact"],
+                 ["menu-faq"], options={"viewport": [390, 844]}, capability="hamburger menu at 390x844"),
+        Scenario("transient slow navigation", "slow_navigation.md", "PASSED", ["generate-report"], [],
+                 capability="2 s server delay absorbed by settle + assertion polling"),
     ]
 
 

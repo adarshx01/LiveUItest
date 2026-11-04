@@ -128,11 +128,26 @@ class ExecutionEngine:
 
             steps = list(runtime.results.values())
             metrics = ReportGenerator._metrics(steps, runtime).model_dump()
+        flaky = await self._is_flaky(values, final.get("outcome"))
         await self._update_run(execution_id, status=values.get("execution_status") or "COMPLETED",
-                               outcome=final.get("outcome"), reason=final.get("reason", "")[:2000],
+                               outcome=final.get("outcome"), reason=final.get("reason", "")[:2000], flaky=flaky,
                                runner=values.get("runner"), metrics=metrics, report_uri=report.get("html_uri"),
                                report_json_uri=report.get("json_uri"), video_uri=report.get("video_uri"),
                                finished_at=_now())
+
+    async def _is_flaky(self, values: dict[str, Any], outcome: str | None) -> bool:
+        """Same test version, same environment, diverging pass/fail outcomes in recent runs => flaky."""
+
+        if self.platform is None or outcome not in ("PASSED", "FAILED"):
+            return False
+        try:
+            runs = await self.platform.list_runs(values["organization_id"], test_case_id=values["test_case_id"],
+                                                 limit=10)
+        except Exception:  # pragma: no cover
+            return False
+        recent = {r.outcome for r in runs if r.test_case_version == values.get("test_case_version")
+                  and r.outcome in ("PASSED", "FAILED") and r.id != values.get("execution_id")}
+        return bool(recent) and (recent | {outcome}) == {"PASSED", "FAILED"}
 
     async def _update_run(self, execution_id: str, **fields: Any) -> None:
         if self.platform is None:

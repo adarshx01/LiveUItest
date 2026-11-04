@@ -23,10 +23,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     platform = await bootstrap()
     app.state.platform = platform
     app.state.dispatcher = ExecutionDispatcher(platform.engine, platform.platform, platform.sessionmaker)
+    from backend.services.scheduler import Scheduler
+
+    scheduler = Scheduler(app.state.dispatcher, platform.sessionmaker)
+    if get_settings().run_worker_in_api:
+        scheduler.start()
     log.info("API ready")
     try:
         yield
     finally:
+        await scheduler.stop()
         await platform.engine.stop()
 
 

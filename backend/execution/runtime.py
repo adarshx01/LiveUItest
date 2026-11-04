@@ -259,6 +259,12 @@ class ExecutionRuntime:
                 await self.memory.record_page(obs)
             except Exception as exc:  # pragma: no cover
                 log.warning("page memory write failed", error=str(exc)[:200])
+        if (self.runner == "debug" or self.request.options.debug) and obs.snapshot_text:
+            ref = await self.artifacts.put_bytes(self.execution_id, "snapshots", f"{obs.observation_id}.yml",
+                                                 obs.snapshot_text.encode("utf-8"), "text/yaml")
+            obs.snapshot_artifact = ref.uri
+            if self.recorder is not None:
+                await self.recorder.artifact(ref, self.work.step.id if self.work else None)
         await self.emit("PAGE_OBSERVED", f"{obs.title} ({len(obs.elements)} elements)", **obs.summary())
         return obs
 

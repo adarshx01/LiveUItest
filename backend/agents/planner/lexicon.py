@@ -327,13 +327,22 @@ def synonyms_for(purpose: str | None) -> list[str]:
     return list(PURPOSES[purpose].phrases)
 
 
+def _in_verb_position(norm: str, words: tuple[str, ...]) -> bool:
+    """Destructive/messaging keywords count only as the control's verb ("Post comment", "Permanently delete"),
+    not as a noun inside another action ("Like this post", "Delete history settings" still matches)."""
+
+    head = " ".join(norm.split()[:2])
+    return any(re.search(rf"(^|\s){re.escape(w)}(\s|$)", head) or norm.startswith(w + " ") or norm == w
+               for w in words)
+
+
 def risk_for_text(text: str) -> str | None:
     norm = normalize_text(text)
     if any(re.search(rf"\b{re.escape(w)}\b", norm) for w in FINANCIAL_WORDS):
         return "financial"
-    if any(re.search(rf"\b{re.escape(w)}\b", norm) for w in DESTRUCTIVE_WORDS):
+    if _in_verb_position(norm, DESTRUCTIVE_WORDS):
         return "destructive"
-    if any(re.search(rf"\b{re.escape(w)}\b", norm) for w in MESSAGING_WORDS):
+    if _in_verb_position(norm, MESSAGING_WORDS):
         return "messaging"
     if any(re.search(rf"\b{re.escape(w)}\b", norm) for w in SUBMIT_WORDS):
         return "submit"

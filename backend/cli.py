@@ -39,6 +39,9 @@ async def run_test(args: argparse.Namespace) -> int:
                                    "headless": not args.headed}
         if args.runner:
             options["runner"] = args.runner
+        if args.viewport:
+            width, height = args.viewport.lower().split("x")
+            options["viewport"] = [int(width), int(height)]
         run = await platform.platform.create_run(org_id=org, tc=tc, version=version.version, options=options)
         state = initial_state(execution_id=run.id, organization_id=org, project_id=project.id,
                               application_id=tc.application_id, test_case_id=tc.id, test_case_version=version.version,
@@ -87,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--auto-approve", action="store_true", help="auto-approve high-risk actions (test envs only)")
     run.add_argument("--headed", action="store_true")
     run.add_argument("--runner")
+    run.add_argument("--viewport", help="e.g. 390x844 for a mobile layout")
     run.add_argument("--allow-domain", action="append")
     run.add_argument("--checkpointer", choices=["postgres", "memory"], default="postgres")
     serve = sub.add_parser("serve", help="run the API server")

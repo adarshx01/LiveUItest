@@ -61,6 +61,8 @@
     }
     document.addEventListener('click', function (e) { report('click', e.target); }, true);
     document.addEventListener('change', function (e) { report('change', e.target); }, true);
+    document.addEventListener('dragstart', function (e) { report('dragstart', e.target); }, true);
+    document.addEventListener('drop', function (e) { report('drop', e.target); }, true);
   })();
 </script>
 {% block scripts %}{% endblock %}

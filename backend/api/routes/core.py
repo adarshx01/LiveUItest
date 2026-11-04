@@ -137,3 +137,22 @@ async def create_secret(body: SecretCreate, who: Principal = PrincipalDep, pf: P
 async def list_secrets(project_id: str | None = None, who: Principal = PrincipalDep, pf: Platform = PlatformDep) -> dict:
     names = await pf.secrets.available_names(SecretScope(who.organization_id, project_id))
     return {"names": sorted(names)}
+
+
+@router.post("/schedules", status_code=201)
+async def create_schedule(body: dict[str, Any], who: Principal = PrincipalDep, pf: Platform = PlatformDep) -> dict:
+    """Run a test case or suite every ``interval_minutes`` (body: target_type, target_id, interval_minutes)."""
+
+    from backend.core.ids import new_id
+    from backend.models.entities import Schedule
+
+    if body.get("target_type") not in ("test_case", "suite") or int(body.get("interval_minutes", 0)) < 5:
+        raise HTTPException(422, "target_type must be test_case|suite and interval_minutes >= 5")
+    async with pf.sessionmaker() as s:
+        schedule = Schedule(id=new_id("sched"), organization_id=who.organization_id,
+                            project_id=body.get("project_id", ""), target_type=body["target_type"],
+                            target_id=body["target_id"], interval_minutes=int(body["interval_minutes"]),
+                            options={"variables": body.get("variables", {}), "options": body.get("options", {})})
+        s.add(schedule)
+        await s.commit()
+    return {"id": schedule.id, "interval_minutes": schedule.interval_minutes}

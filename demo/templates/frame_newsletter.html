@@ -6,4 +6,18 @@
   <input id="nl_email" type="email" data-gt="iframe-email"> <button type="submit" data-gt="iframe-subscribe">Subscribe</button>
 </form>
 <p id="nl_status" role="status"></p>
+<script>
+  (function () {
+    function report(type, target) {
+      try {
+        var el = target && target.closest ? target.closest('[data-gt]') : null;
+        var payload = JSON.stringify({type: type, gt: el ? el.getAttribute('data-gt') : null, tag: target && target.tagName,
+          path: location.pathname, value: target && target.value ? String(target.value).slice(0, 40) : null});
+        navigator.sendBeacon('/__events', new Blob([payload], {type: 'application/json'}));
+      } catch (e) {}
+    }
+    document.addEventListener('click', function (e) { report('click', e.target); }, true);
+    document.addEventListener('change', function (e) { report('change', e.target); }, true);
+  })();
+</script>
 </body></html>
