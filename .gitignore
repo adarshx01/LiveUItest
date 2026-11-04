@@ -24,3 +24,5 @@ reports/local/
 
 # OS
 .DS_Store
+frontend/next-env.d.ts.bak
+frontend/tsconfig.tsbuildinfo

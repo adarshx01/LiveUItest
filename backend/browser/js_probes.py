@@ -170,11 +170,20 @@ PAGE_SIGNALS = Probe("page_signals", r"""() => {
     const t = textOf(el); if (t && t.length < 200 && el.getBoundingClientRect().height > 0) errors.push(t);
     if (errors.length > 10) break;
   }
+  // native constraint validation (bubbles are not part of the DOM); validity is read without firing events
+  const invalidFields = [];
+  for (const el of document.querySelectorAll('input,select,textarea')) {
+    if (el.willValidate && el.validity && !el.validity.valid && el.getBoundingClientRect().height > 0) {
+      const label = (el.labels && el.labels.length ? textOf(el.labels[0]) : '') || el.getAttribute('aria-label') || el.name || el.id;
+      invalidFields.push(label + ': ' + (el.validationMessage || 'invalid'));
+      if (invalidFields.length > 10) break;
+    }
+  }
   const busy = document.querySelectorAll('[aria-busy="true"],.spinner,.loading,[class*="spinner" i],[class*="loading" i]');
   let busyVisible = 0;
   for (const b of busy) { const r = b.getBoundingClientRect(); if (r.width > 0 && r.height > 0 && getComputedStyle(b).visibility !== 'hidden') busyVisible++; }
   return {url: location.href, title: document.title, readyState: document.readyState, captcha, injection,
-          validationErrors: Array.from(new Set(errors)).slice(0, 8), busy: busyVisible,
+          validationErrors: Array.from(new Set(errors)).slice(0, 8), invalidFields, busy: busyVisible,
           textLength: body.length};
 }""")
 

@@ -216,6 +216,13 @@ class ActionVerifier:
             if changed:
                 return result("verified", "observable effect: " + ", ".join(change_reasons[:3])
                               + (f"; messages: {errors[:2]}" if errors else ""))
+            submit_like = step.risk_hint == "submit" or (element is not None and element.input_type == "submit") or \
+                any(n.startswith("submits_form_group") for n in step.notes)
+            if submit_like and after.page_state.invalid_fields:
+                checks.append({"check": "constraint_validation", "ok": False,
+                               "detail": after.page_state.invalid_fields[:5]})
+                return result("failed", "form was not submitted; the browser rejected invalid fields: "
+                              + "; ".join(after.page_state.invalid_fields[:3]), FailureCategory.FORM_VALIDATION_FAILED)
             if step.expects_navigation:
                 return result("unverified", "no observable effect after a click that was expected to navigate")
             return result("unverified", "no observable change detected (effect may be outside the page)")

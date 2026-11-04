@@ -30,6 +30,7 @@ def analyze_page_state(*, url: str, title: str, headings: list[str], elements: l
     state.error_page = bool((state.http_status and state.http_status >= 400) or ERROR_TITLE_RE.search(title or "")
                             or ERROR_TITLE_RE.search(heading_text) or APP_ERROR_ALERT_RE.search(alert_text))
     state.validation_errors = [e for e in (signals.get("validationErrors") or []) if e][:8]
+    state.invalid_fields = [e for e in (signals.get("invalidFields") or []) if e][:10]
     modal_dialogs = [d for d in dialogs if d.modal]
     obstructed = sum(1 for e in elements if e.obstructed and e.visible and e.in_viewport)
     state.blocking_overlay = bool(modal_dialogs) or obstructed >= 3

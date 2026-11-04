@@ -167,6 +167,7 @@ class PageState(BaseModel):
     blocking_overlay: bool = False
     overlay_names: list[str] = Field(default_factory=list)
     validation_errors: list[str] = Field(default_factory=list)
+    invalid_fields: list[str] = Field(default_factory=list)  # native constraint validation state
     page_kind: str | None = None  # login, dashboard, form, list, error, challenge...
     authenticated_hint: bool | None = None
     injection_findings: list[str] = Field(default_factory=list)

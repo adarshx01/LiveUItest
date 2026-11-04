@@ -95,11 +95,15 @@ class BrowserSession:
             return None
         deadline = time.time() + timeout
         last_size = -1
+        empty_checks = 0
         while time.time() < deadline:
             if self.video_file.exists():
                 size = self.video_file.stat().st_size
                 if size > 0 and size == last_size:
                     return self.video_file
+                empty_checks = empty_checks + 1 if size == 0 else 0
+                if empty_checks >= 5:  # the encoder produced nothing; do not keep the run waiting
+                    return None
                 last_size = size
             await asyncio.sleep(0.3)
         if self.video_file.exists() and self.video_file.stat().st_size > 0:
