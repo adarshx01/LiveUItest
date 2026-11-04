@@ -36,7 +36,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_REPORTS = {"1. first run (learns)": "login-first-run.html",
                   "3. UI changed (v2 locators)": "ui-change-healed.html",
                   "broken checkout": "broken-checkout-failed.html",
-                  "one-time code from the vault": "otp-secret-masked.html"}
+                  "one-time code from the vault": "otp-secret-masked.html",
+                  "custom dropdown zoo": "custom-dropdowns.html"}
 MEMORY_TABLES = ("locator_memory", "page_memory", "page_fingerprints", "failure_memory", "memory_versions",
                  "test_execution_memory", "interaction_patterns", "application_memory")
 

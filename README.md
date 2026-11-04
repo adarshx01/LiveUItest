@@ -94,7 +94,8 @@ workers, the Playwright MCP browser worker (HTTP transport), the UI and the demo
     "Selct Indai from the contry dropdown".
 * [`docs/sample-reports/`](docs/sample-reports/) — generated reports, refreshed by `demo_e2e.py`: a
   first run, the UI-change run (stale memory detected, re-grounded, recovery recorded), a failed
-  broken-checkout run, and a one-time-code run showing secrets masked in code, text and screenshots.
+  broken-checkout run, a one-time-code run showing secrets masked in code, text and screenshots, and
+  the custom-dropdown run (portal, search, virtualized, div-soup, multi-select, menu).
 
 ## Tests
 
