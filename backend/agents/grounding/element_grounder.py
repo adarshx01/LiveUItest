@@ -1,0 +1,451 @@
+"""Contextual element grounding (spec sections 8.4, 9.5, 10.1).
+
+Scores every inventory element against the step's semantic target with
+explainable features (name, purpose, role, context, state, type, option,
+visual, memory), applies hard safety constraints, resolves ambiguity with
+context and ordinals instead of DOM order, and calibrates a confidence that
+drives the execute / enhanced-verify / refine / ask-human decision.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from backend.agents.grounding.locator_strategy import LocatorStrategy, StrategyResolution, resolve_strategy
+from backend.agents.grounding.text_match import similarity, split_identifier
+from backend.agents.planner.lexicon import ACTION_ROLE_COMPAT, normalize_text, purpose_compatible
+from backend.core.config import ConfidenceThresholds, get_settings
+from backend.dsl.models import ActionType, Step, TargetSpec
+from backend.dsl.observation import InventoryElement, Observation
+from backend.dsl.results import GroundingCandidate, GroundingDecision
+
+EDITABLE_ROLES = {"textbox", "searchbox", "combobox", "spinbutton"}
+TOGGLE_ROLES = {"checkbox", "switch", "radio", "menuitemcheckbox", "menuitemradio"}
+SUBMIT_PURPOSES = {"submit_login", "submit_register", "submit_generic", "checkout"}
+
+ACTION_FOR_GROUNDING = {
+    ActionType.CLICK: "click", ActionType.DOUBLE_CLICK: "click", ActionType.RIGHT_CLICK: "click",
+    ActionType.HOVER: "hover", ActionType.FILL: "fill", ActionType.TYPE: "type", ActionType.CLEAR: "clear",
+    ActionType.SELECT: "select", ActionType.CHECK: "check", ActionType.UNCHECK: "uncheck",
+    ActionType.TOGGLE: "toggle", ActionType.UPLOAD: "upload", ActionType.DRAG: "drag", ActionType.DROP: "drop",
+    ActionType.DOWNLOAD: "download", ActionType.PRESS_KEY: "type", ActionType.CAPTURE_VALUE: "hover",
+    ActionType.OPEN_PAGE: "click", ActionType.ASSERT: "hover", ActionType.CAPTURE_SCREENSHOT: "hover",
+    ActionType.DISMISS_DIALOG: "click", ActionType.ACCEPT_DIALOG: "click",
+}
+
+
+@dataclass
+class GroundingContext:
+    previous_element: InventoryElement | None = None
+    previous_form_ref: str | None = None
+    previous_form_name: str | None = None
+    memory_strategies: list[tuple[LocatorStrategy, float, str | None]] = field(default_factory=list)  # (s, conf, id)
+    excluded_keys: set[str] = field(default_factory=set)
+    frame_hint: str | None = None
+    allow_hidden: bool = False
+
+
+@dataclass
+class ScoredCandidate:
+    element: InventoryElement
+    raw: float
+    features: dict[str, float]
+    evidence: list[str]
+    memory_quality: float = 0.0
+    memory_id: str | None = None
+
+
+def element_key(el: InventoryElement) -> str:
+    return "|".join([el.role, normalize_text(el.name), el.dom_id or "", el.test_id or "", el.css_selector or "",
+                     str(round(el.bbox.x)) if el.bbox else "", str(round(el.bbox.y)) if el.bbox else ""])
+
+
+def _target_phrases(target: TargetSpec) -> list[tuple[str, float]]:
+    phrases: list[tuple[str, float]] = []
+    if target.exact_name:
+        phrases.append((target.exact_name, 1.0))
+    intent = target.intent or ""
+    if target.option_text and " containing " in intent:
+        intent = intent.split(" containing ")[0]
+        if intent in ("choice",):
+            intent = ""
+    if intent and intent.lower() not in ("url", "focused element"):
+        phrases.append((intent, 0.95 if not target.exact_name else 0.8))
+    for hint in target.semantic_hints:
+        if hint and all(normalize_text(hint) != normalize_text(p) for p, _ in phrases):
+            phrases.append((hint, 0.8))
+    return phrases[:16]
+
+
+def _element_texts(el: InventoryElement) -> list[tuple[str, float]]:
+    texts: list[tuple[str, float]] = []
+    if el.name:
+        texts.append((el.name, 1.0))
+    if el.label and el.label != el.name:
+        texts.append((el.label, 0.97))
+    if el.placeholder:
+        texts.append((el.placeholder, 0.9))
+    if el.title and el.title != el.name:
+        texts.append((el.title, 0.88))
+    if el.text and el.role not in EDITABLE_ROLES and el.text != el.name and len(el.text) < 120:
+        texts.append((el.text, 0.85))
+    for ident, weight in ((el.test_id, 0.72), (el.dom_id, 0.66), (el.name_attr, 0.66)):
+        words = split_identifier(ident)
+        if words:
+            texts.append((words, weight))
+    for extra in el.nearby_text[:3]:
+        if extra.startswith("icon:"):
+            texts.append((extra[5:], 0.72))
+        elif extra != "draggable":
+            texts.append((extra, 0.6))
+    return texts
+
+
+def name_score(target: TargetSpec, el: InventoryElement) -> tuple[float, str]:
+    best, why = 0.0, ""
+    if target.exact_name and el.name and el.name.strip() == target.exact_name.strip():
+        return 1.0, f"accessible name equals '{target.exact_name}'"
+    for phrase, pw in _target_phrases(target):
+        for text, tw in _element_texts(el):
+            s = similarity(phrase, text) * pw * tw
+            if s > best:
+                best, why = s, f"'{phrase}' ~ '{text[:40]}' ({s:.2f})"
+    return round(best, 4), why
+
+
+def _role_score(target: TargetSpec, el: InventoryElement, action: str) -> float:
+    roles = target.preferred_roles or []
+    if roles and el.role == roles[0]:
+        return 1.0
+    if el.role in roles:
+        return 0.85
+    if el.role in ACTION_ROLE_COMPAT.get(action, ()):
+        return 0.55
+    if el.clickable_hint and action in ("click", "hover", "drag"):
+        return 0.45
+    if action in ("drop", "hover") and el.role in ("region", "list", "group", "generic", "listitem", "article"):
+        return 0.5
+    return 0.0
+
+
+def _context_score(target: TargetSpec, el: InventoryElement, ctx: GroundingContext, action: str,
+                   modal_refs: set[str], has_modal: bool) -> tuple[float, list[str]]:
+    score = 0.6
+    notes: list[str] = []
+    c = el.context
+    if target.context_hint:
+        fields = [c.form_name, c.dialog_name, c.section_heading, c.landmark_name, c.landmark, c.fieldset_legend,
+                  c.row_text, *(c.ancestors or [])]
+        best = max((similarity(target.context_hint, f) for f in fields if f), default=0.0)
+        if best >= 0.5:
+            score = 0.6 + 0.4 * best
+            notes.append(f"context '{target.context_hint}' matched ({best:.2f})")
+        else:
+            score = 0.12
+            notes.append(f"context '{target.context_hint}' not matched")
+    if ctx.previous_form_ref and action in ("fill", "type", "select", "check", "uncheck", "click"):
+        if c.form_ref == ctx.previous_form_ref:
+            score = max(score, 0.85)
+            notes.append("same form as previous step")
+        elif c.form_ref and action == "click" and target.purpose in SUBMIT_PURPOSES:
+            score = min(score, 0.35)
+            notes.append("different form than previous step")
+    if (target.purpose in SUBMIT_PURPOSES or target.purpose in ("username_or_email", "password", "email")) \
+            and c.form_ref:
+        score += 0.1
+    if has_modal:
+        if c.dialog_ref and c.dialog_ref in modal_refs:
+            score = max(score, 0.85)
+            notes.append("inside open modal dialog")
+        else:
+            score = min(score, 0.05)
+            notes.append("outside the open modal dialog")
+    if target.frame_hint or ctx.frame_hint:
+        hint = target.frame_hint or ctx.frame_hint
+        if c.frame:
+            score = max(score, 0.7)
+            notes.append(f"inside frame (hint '{hint}')")
+        else:
+            score = min(score, 0.3)
+    return max(0.0, min(1.0, score)), notes
+
+
+def _state_score(el: InventoryElement) -> float:
+    if not el.visible:
+        return 0.1
+    if not el.enabled:
+        return 0.35
+    if el.obstructed:
+        return 0.5
+    if not el.in_viewport:
+        return 0.85
+    return 1.0
+
+
+def _option_score(target: TargetSpec, el: InventoryElement, step: Step) -> float | None:
+    option = target.option_text
+    if not option or step.action != ActionType.SELECT:
+        return None
+    norm_opt = normalize_text(option)
+    if el.options:
+        norms = [normalize_text(o) for o in el.options]
+        if norm_opt in norms:
+            return 1.0
+        if any(norm_opt in o or o in norm_opt for o in norms if o):
+            return 0.75
+        return 0.05
+    if el.role in ("radio", "tab", "button", "option", "menuitemradio") and normalize_text(el.name) == norm_opt:
+        return 1.0
+    if el.role in ("combobox", "listbox"):
+        return None  # custom/lazy dropdown: options only appear after opening, so no evidence either way
+    return 0.1
+
+
+def _visual_score(target: TargetSpec, el: InventoryElement) -> float | None:
+    if not target.visual_hint:
+        return None
+    words = [t[5:] for t in el.nearby_text if t.startswith("icon:")] + [el.classes or "", el.title or "",
+                                                                       el.name or "", el.text or ""]
+    best = max((similarity(target.visual_hint, w) for w in words if w), default=0.0)
+    if el.role == "canvas" and any(r == "canvas" for r in target.preferred_roles):
+        best = max(best, 0.7)
+    return best
+
+
+def _hard_excluded(step: Step, target: TargetSpec, el: InventoryElement, action: str,
+                   ctx: GroundingContext) -> str | None:
+    if element_key(el) in ctx.excluded_keys:
+        return "excluded by healing"
+    if el.role == "option" and step.action != ActionType.SELECT:
+        return "option inside closed list"
+    if not el.visible and not ctx.allow_hidden:
+        return "not visible"
+    if action in ("fill", "type", "clear") and el.role not in EDITABLE_ROLES and not el.editable:
+        return "not editable"
+    if target.input_type == "password" and action in ("fill", "type") and el.input_type not in (None, "password"):
+        return "not a password field"
+    if target.input_type == "password" and action in ("fill", "type") and el.input_type is None and \
+            el.semantic_purpose not in ("password", "confirm_password"):
+        return "not a password field"
+    if action in ("check", "uncheck") and el.role not in TOGGLE_ROLES and not (el.role == "button" and
+                                                                               el.checked is not None):
+        return "not a toggle"
+    if action == "upload" and not (el.input_type == "file" or el.semantic_purpose == "upload"):
+        return "not a file input"
+    if el.role in ("heading", "paragraph", "status", "alert", "row", "cell", "listitem", "form", "iframe", "group",
+                   "region", "list", "table", "dialog", "alertdialog") and action in ("click", "fill", "type",
+                                                                                      "select", "check"):
+        if not (action == "click" and el.clickable_hint):
+            return "non-interactive container"
+    return None
+
+
+class ElementGrounder:
+    name = "dom_intelligence_agent"
+
+    def __init__(self, thresholds: ConfidenceThresholds | None = None) -> None:
+        self.thresholds = thresholds or get_settings().thresholds
+
+    def ground(self, step: Step, observation: Observation, ctx: GroundingContext | None = None,
+               *, target: TargetSpec | None = None, action_override: str | None = None) -> GroundingDecision:
+        ctx = ctx or GroundingContext()
+        target = target or step.target
+        if target is None:
+            return GroundingDecision(decision="not_found", reason="step has no target")
+        action = action_override or ACTION_FOR_GROUNDING.get(step.action, "click")
+        modal_refs = {d.ref for d in observation.dialogs if d.modal and d.ref}
+        has_modal = bool(modal_refs)
+
+        memory_res: list[tuple[StrategyResolution, float, str | None]] = []
+        for strategy, conf, memory_id in ctx.memory_strategies:
+            res = resolve_strategy(strategy, observation)
+            if res.element is not None:
+                memory_res.append((res, conf, memory_id))
+
+        scored: list[ScoredCandidate] = []
+        rejected: dict[str, str] = {}
+        submit_form_ref = ctx.previous_form_ref if any(n.startswith("submits_form_group") for n in step.notes) else None
+        has_name_target = bool(_target_phrases(target))
+        for el in observation.elements:
+            reason = _hard_excluded(step, target, el, action, ctx)
+            if reason:
+                rejected[el.element_id] = reason
+                continue
+            role = _role_score(target, el, action)
+            if role == 0.0:
+                rejected[el.element_id] = "role incompatible"
+                continue
+            features: dict[str, float] = {"role": role}
+            evidence: list[str] = []
+            identity_parts: list[float] = []
+            if has_name_target:
+                n_score, why = name_score(target, el)
+                features["name"] = n_score
+                identity_parts.append(n_score)
+                if why and n_score >= 0.3:
+                    evidence.append(why)
+            purpose_conflict = False
+            if target.purpose:
+                if el.semantic_purpose:
+                    compat = purpose_compatible(target.purpose, el.semantic_purpose)
+                    features["purpose"] = compat * max(0.6, el.purpose_confidence)
+                    identity_parts.append(features["purpose"] * 0.95)
+                    if compat:
+                        evidence.append(f"purpose {el.semantic_purpose} ({el.purpose_confidence:.2f})")
+                    elif el.purpose_confidence >= 0.8:
+                        purpose_conflict = True
+                        evidence.append(f"purpose conflict: element is {el.semantic_purpose}")
+                else:
+                    features["purpose"] = 0.0
+            opt = _option_score(target, el, step)
+            if opt is not None:
+                features["option"] = opt
+                identity_parts.append(opt * 0.95)
+                if opt >= 0.75:
+                    evidence.append(f"contains option '{target.option_text}'")
+            vis = _visual_score(target, el)
+            if vis is not None:
+                features["visual"] = vis
+                identity_parts.append(vis * 0.85)
+            identity = 1.0
+            for part in identity_parts:
+                identity *= (1.0 - max(0.0, min(1.0, part)))
+            identity = 1.0 - identity if identity_parts else 0.5
+            if purpose_conflict:
+                identity *= 0.65
+            if opt is not None and opt < 0.2:
+                identity *= 0.5  # this dropdown does not offer the requested option
+            features["identity"] = round(identity, 4)
+            context_score, notes = _context_score(target, el, ctx, action, modal_refs, has_modal)
+            if submit_form_ref and action == "click":
+                if el.context.form_ref == submit_form_ref and (el.input_type in ("submit", "image") or
+                                                               el.semantic_purpose in SUBMIT_PURPOSES):
+                    context_score = max(context_score, 0.95)
+                    notes.append("submit control of the form filled in previous steps")
+                elif el.context.form_ref != submit_form_ref:
+                    context_score = min(context_score, 0.3)
+            features["context"] = context_score
+            evidence.extend(notes)
+            features["state"] = _state_score(el)
+            if target.input_type:
+                features["type"] = 1.0 if el.input_type == target.input_type else (
+                    0.6 if el.input_type in (None, "text") and target.input_type == "email" else 0.2)
+            candidate = ScoredCandidate(el, 0.0, features, evidence)
+            for res, conf, memory_id in memory_res:
+                if res.element is el and not res.ambiguous:
+                    candidate.memory_quality = res.quality * conf
+                    candidate.memory_id = memory_id
+                    candidate.evidence.append(f"memory strategy re-grounded ({res.quality:.2f}, on "
+                                              f"{','.join(res.matched_on[:4])})")
+            scored.append(candidate)
+
+        # prefer main-content controls over header/footer look-alikes, but only when such an alternative exists
+        if target.purpose in SUBMIT_PURPOSES or target.purpose in ("username_or_email", "password", "email") or \
+                action in ("fill", "type"):
+            main_alternative = any(c.features["identity"] >= 0.6 and c.element.context.landmark not in
+                                   ("banner", "navigation", "contentinfo") for c in scored)
+            if main_alternative:
+                for c in scored:
+                    if c.element.context.landmark in ("banner", "navigation", "contentinfo") and not target.context_hint:
+                        c.features["context"] = max(0.0, c.features["context"] - 0.3)
+                        c.evidence.append(f"header/footer control while a main-content match exists")
+        for c in scored:
+            f = c.features
+            weights = {"identity": 0.56, "role": 0.12, "context": 0.14, "state": 0.12}
+            if "type" in f:
+                weights["type"] = 0.06
+            c.raw = sum(f[k] * w for k, w in weights.items()) / sum(weights.values())
+
+        if not scored:
+            return GroundingDecision(decision="not_found", reason="no compatible element on the page",
+                                     evidence=[f"{k}: {v}" for k, v in list(rejected.items())[:8]])
+        scored.sort(key=lambda c: (-(c.raw + 0.25 * c.memory_quality), c.element.bbox.y if c.element.bbox else 0))
+        top = scored[0]
+        second = scored[1] if len(scored) > 1 else None
+        ordinal_applied = False
+        if target.ordinal is not None or target.position_hint:
+            tier = [c for c in scored if c.raw >= top.raw - 0.08]
+            tier.sort(key=lambda c: ((c.element.bbox.y if c.element.bbox else 0) // 8,
+                                     c.element.bbox.x if c.element.bbox else 0))
+            if target.position_hint:
+                tier = _apply_position(tier, target.position_hint, observation.viewport)
+            if target.ordinal is not None and tier:
+                index = target.ordinal - 1 if target.ordinal > 0 else len(tier) + target.ordinal
+                if 0 <= index < len(tier):
+                    top = tier[index]
+                    ordinal_applied = True
+            elif tier:
+                top = tier[0]
+                ordinal_applied = True
+            second = next((c for c in scored if c is not top), None)
+
+        margin = top.raw - (second.raw if second else 0.0)
+        separation = min(1.0, max(0.0, margin) / 0.25)
+        confidence = top.raw * (0.6 + 0.4 * separation)
+        if ordinal_applied:
+            confidence = max(confidence, top.raw * 0.95)
+        elif margin >= 0.4 and top.features.get("identity", 0) >= 0.75:
+            confidence += (1 - confidence) * 0.35  # the only plausible match on the page
+        if top.memory_quality > 0:
+            confidence = min(0.995, confidence + (1 - confidence) * 0.6 * top.memory_quality)
+        elif memory_res and any(not r.ambiguous and r.element is not None and r.quality > 0.8 for r, _, _ in memory_res):
+            confidence *= 0.85  # live page evidence disagrees with validated memory
+            top.evidence.append("conflicts with remembered strategy")
+        confidence = round(min(confidence, 0.995), 4)
+        decision = self.decide(confidence)
+        el = top.element
+        return GroundingDecision(
+            element_id=el.element_id,
+            ref=el.ref,
+            display=el.display(),
+            role=el.role,
+            name=el.name or el.label or "",
+            confidence=confidence,
+            decision=decision,
+            method="memory" if top.memory_quality > 0.5 else "semantic",
+            locator_strategy=LocatorStrategy.from_element(el, observation).model_dump(exclude_none=True),
+            candidates=[GroundingCandidate(element_id=c.element.element_id, ref=c.element.ref,
+                                           display=c.element.display(), score=round(c.raw, 4),
+                                           features={k: round(v, 3) for k, v in c.features.items()},
+                                           evidence=c.evidence[:6],
+                                           bbox=c.element.bbox.model_dump() if c.element.bbox else None)
+                        for c in scored[:6]],
+            evidence=top.evidence[:8],
+            bbox=el.bbox.model_dump() if el.bbox else None,
+            memory_id=top.memory_id,
+            reason=f"best={top.raw:.2f} margin={margin:.2f}" + (" ordinal" if ordinal_applied else ""),
+        )
+
+    def decide(self, confidence: float) -> Any:
+        t = self.thresholds
+        if confidence >= t.execute:
+            return "execute"
+        if confidence >= t.enhanced_verification:
+            return "execute_enhanced"
+        if confidence >= t.refine:
+            return "refine"
+        return "ask_human"
+
+
+def _apply_position(tier: list[ScoredCandidate], hint: str, viewport: tuple[int, int]) -> list[ScoredCandidate]:
+    width, height = viewport
+
+    def key(c: ScoredCandidate) -> float:
+        if not c.element.bbox:
+            return 1e9
+        cx, cy = c.element.bbox.center
+        score = 0.0
+        if "top" in hint:
+            score += cy
+        if "bottom" in hint:
+            score += height - cy
+        if "left" in hint:
+            score += cx
+        if "right" in hint:
+            score += width - cx
+        if "center" in hint or "middle" in hint:
+            score += abs(cx - width / 2) + abs(cy - height / 2)
+        return score
+
+    return sorted(tier, key=key)

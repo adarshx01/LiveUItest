@@ -35,6 +35,7 @@ class TestCompiler:
 
         renumber(steps)
         flat = [s for step in steps for s in step.iter_flat()]
+        self._link_page_openers(flat)
         group = 0
         previous_form_action = False
         for step in flat:
@@ -56,6 +57,27 @@ class TestCompiler:
         compiled = spec.model_copy(update={"steps": steps})
         compiled.analyzer = {**spec.analyzer, "compiled": True, "step_count": len(flat)}
         return compiled
+
+    @staticmethod
+    def _link_page_openers(flat: list[Step]) -> None:
+        """'Open the login page' + 'Click on the Login button': the click *is* how the page opens.
+
+        The OPEN_PAGE step then only checks where we are instead of clicking the same control twice.
+        """
+
+        from backend.agents.grounding.text_match import similarity
+
+        for current, nxt in zip(flat, flat[1:]):
+            if current.action != ActionType.OPEN_PAGE or nxt.action != ActionType.CLICK or not current.target \
+                    or not nxt.target:
+                continue
+            page = current.target.intent.replace(" page", "")
+            same_purpose = bool(current.target.purpose and current.target.purpose == nxt.target.purpose)
+            same_name = similarity(page, nxt.target.exact_name or nxt.target.intent) >= 0.8
+            if same_purpose or same_name:
+                current.notes.append(f"opened_by_next_step:{nxt.id}")
+                nxt.notes.append(f"opens_page:{page}")
+                nxt.expects_navigation = True
 
     @staticmethod
     def _annotate_risk(step: Step) -> None:

@@ -38,7 +38,7 @@ PURPOSES: dict[str, Purpose] = {
                 ("textbox",), ("password",), ("current-password", "new-password"), sensitive=True),
         Purpose("confirm_password", ("confirm password", "repeat password", "re-enter password", "reenter password",
                                      "retype password", "password confirmation", "verify password", "confirm"),
-                ("textbox",), ("password",), ("new-password",), sensitive=True, related=("password",)),
+                ("textbox",), ("password",), ("new-password",), sensitive=True),
         Purpose("full_name", ("full name", "name", "your name", "complete name", "person's name", "person name"),
                 ("textbox",), ("text",), ("name",), related=("first_name",)),
         Purpose("first_name", ("first name", "given name", "forename"), ("textbox",), ("text",), ("given-name",)),
@@ -304,15 +304,19 @@ def classify_phrase(text: str | None, *, kinds: tuple[str, ...] | None = None) -
                         alternatives=[(n, s) for n, s, _ in scored[1:4]])
 
 
-def purpose_compatible(a: str | None, b: str | None) -> float:
-    """1.0 for same purpose, 0.8 for declared substitutes, 0 otherwise."""
+def purpose_compatible(target: str | None, element: str | None) -> float:
+    """1.0 for the same purpose, 0.8 when the target accepts the element's purpose as a substitute.
 
-    if not a or not b:
+    Asymmetric on purpose: a "confirm password" field is *not* an acceptable target
+    for "enter the password", although the reverse substitution is tolerated.
+    """
+
+    if not target or not element:
         return 0.0
-    if a == b:
+    if target == element:
         return 1.0
-    pa, pb = PURPOSES.get(a), PURPOSES.get(b)
-    if (pa and b in pa.related) or (pb and a in pb.related):
+    spec = PURPOSES.get(target)
+    if spec and element in spec.related:
         return 0.8
     return 0.0
 

@@ -992,7 +992,7 @@ def build_target(phrase: str | None, action: str) -> TargetSpec:
                      if (w in COLOR_WORDS or w in SHAPE_WORDS) and w != (element_kind or "")]
     visual_hint = " ".join(visual_tokens) if visual_tokens else None
     if element_kind == "icon":
-        visual_hint = f"{work} icon".strip()
+        visual_hint = work.strip() or "icon"
 
     name_text = exact_name or work
     preferred_kinds: tuple[str, ...] | None = None

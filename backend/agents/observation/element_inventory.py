@@ -237,6 +237,11 @@ class InventoryBuilder:
             element.context.form_name = element.context.form_name or str(dom["formId"])
         if dom.get("iconHint"):
             element.nearby_text.append(f"icon:{dom['iconHint']}")
+        from backend.agents.observation.element_classifier import glyph_words
+
+        glyphs = glyph_words(dom.get("text"))
+        if glyphs:
+            element.nearby_text.append(f"icon:{glyphs}")
 
     def _element_from_dom(self, item: dict[str, Any], position: int) -> InventoryElement:
         box = item.get("box") or [0, 0, 0, 0]

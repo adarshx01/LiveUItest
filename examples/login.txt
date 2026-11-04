@@ -1,0 +1,11 @@
+URL: http://127.0.0.1:8800
+
+Test Case: Verify user login
+
+1. Open the login page.
+2. Click on the Login button.
+3. Enter username as abc.
+4. Enter password as abc.
+5. Click on the Sign In button.
+6. Verify that the user is redirected to the dashboard.
+7. Verify that the dashboard displays the logged-in user's name.
