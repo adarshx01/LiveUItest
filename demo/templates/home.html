@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Acme Portal - Home{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Welcome to Acme Portal</h1>
+  <p class="muted">Manage your orders, profile and account settings.</p>
+  <div class="row">
+    <a class="btn" href="/register" data-gt="home-register">Create an account</a>
+    <a class="btn secondary" href="/profile" data-gt="home-profile">Edit profile</a>
+    <a class="btn secondary" href="/shop" data-gt="home-shop">Browse products</a>
+  </div>
+</div>
+{% if show_cookies %}
+<div class="cookie" role="dialog" aria-label="Cookie consent" data-gt="cookie-banner">
+  <span>We use cookies to improve your experience.</span>
+  <span><button class="secondary" onclick="this.closest('.cookie').remove()" data-gt="cookie-reject">Reject</button>
+  <button onclick="this.closest('.cookie').remove()" data-gt="cookie-accept">Accept all</button></span>
+</div>
+{% endif %}
+{% endblock %}

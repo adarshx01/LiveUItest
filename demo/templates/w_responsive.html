@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Responsive{% endblock %}
+{% block head %}<style>
+  .menu-links a { margin-right:12px } .hamburger { display:none }
+  @media (max-width: 700px) { .menu-links { display:none } .menu-links.open { display:block } .hamburger { display:inline-block } }
+</style>{% endblock %}
+{% block content %}
+<div class="card"><h1>Help center</h1>
+  <button class="hamburger" aria-label="Open menu" aria-expanded="false" onclick="var m=document.querySelector('.menu-links');m.classList.toggle('open');this.setAttribute('aria-expanded', m.classList.contains('open'))" data-gt="hamburger">☰</button>
+  <nav class="menu-links" aria-label="Help menu"><a href="#faq" data-gt="menu-faq">FAQ</a><a href="#contact" data-gt="menu-contact" onclick="document.getElementById('h').textContent='Contact support selected'">Contact support</a></nav>
+  <p id="h" role="status" class="muted"></p>
+</div>
+{% endblock %}

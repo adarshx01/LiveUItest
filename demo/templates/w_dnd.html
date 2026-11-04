@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Task board{% endblock %}
+{% block head %}<style>
+ .board{display:flex;gap:14px} .col{flex:1;background:#eef0f6;border-radius:10px;padding:10px;min-height:180px}
+ .task{background:#fff;border:1px solid #e3e6ef;border-radius:8px;padding:10px;margin:8px 0;cursor:grab}
+</style>{% endblock %}
+{% block content %}
+<div class="card"><h1>Task board</h1>
+<div class="board">
+  <section class="col" aria-label="To Do" data-col="todo" data-gt="col-todo"><h3>To Do</h3>
+    <div class="task" draggable="true" id="t1" role="listitem" data-gt="task-a">Write release notes</div>
+    <div class="task" draggable="true" id="t2" role="listitem" data-gt="task-b">Fix login bug</div></section>
+  <section class="col" aria-label="In Progress" data-col="doing" data-gt="col-doing"><h3>In Progress</h3></section>
+  <section class="col" aria-label="Done" data-col="done" data-gt="col-done"><h3>Done</h3></section>
+</div>
+<p id="moved" role="status" class="muted">No changes</p></div>
+{% endblock %}
+{% block scripts %}
+<script>
+  document.querySelectorAll('.task').forEach(function (t) {
+    t.addEventListener('dragstart', function (e) { e.dataTransfer.setData('text/plain', t.id); });
+  });
+  document.querySelectorAll('.col').forEach(function (c) {
+    c.addEventListener('dragover', function (e) { e.preventDefault(); });
+    c.addEventListener('drop', function (e) {
+      e.preventDefault(); var id = e.dataTransfer.getData('text/plain'); var t = document.getElementById(id);
+      if (t) { c.appendChild(t); document.getElementById('moved').textContent = '"' + t.textContent + '" moved to ' + c.getAttribute('aria-label'); }
+    });
+  });
+</script>
+{% endblock %}

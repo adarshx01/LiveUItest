@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Order confirmed - Acme Portal{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Order confirmed</h1>
+  <div class="success" role="status">Thank you! Your order {{ order_id }} has been placed. Total ${{ total }}.</div>
+</div>
+{% endblock %}

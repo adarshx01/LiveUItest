@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Acme Portal{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Dashboard</h1>
+  <p data-gt="dashboard-welcome">Welcome, <strong>{{ display_name }}</strong>!</p>
+  <button class="danger" onclick="location.href='/logout'" data-gt="dashboard-logout">Sign out</button>
+</div>
+<div class="card">
+  <h2>Recent orders</h2>
+  <table aria-label="Recent orders">
+    <thead><tr><th>Order</th><th>Status</th><th>Total</th></tr></thead>
+    <tbody>
+      <tr><td>ORD-1001</td><td>Shipped</td><td>$129</td></tr>
+      <tr><td>ORD-1002</td><td>Processing</td><td>$349</td></tr>
+      <tr><td>ORD-1003</td><td>Delivered</td><td>$59</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}

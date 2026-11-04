@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Activity feed{% endblock %}
+{% block content %}
+<div class="card"><h1>Activity feed</h1><ul id="feed" aria-label="Activity feed"></ul><p id="loading" class="muted">Loading more…</p></div>
+{% endblock %}
+{% block scripts %}
+<script>
+  var offset = 0, total = 100, busy = false;
+  function more() {
+    if (busy || offset >= total) return; busy = true;
+    fetch('/api/items?offset=' + offset + '&limit=20').then(function (r) { return r.json(); }).then(function (d) {
+      d.items.forEach(function (t) { var li = document.createElement('li'); li.textContent = t; li.style.padding = '14px 0'; document.getElementById('feed').appendChild(li); });
+      offset += d.items.length; busy = false; if (offset >= d.total) document.getElementById('loading').textContent = 'End of feed';
+    });
+  }
+  window.addEventListener('scroll', function () { if (window.innerHeight + window.scrollY > document.body.scrollHeight - 300) more(); });
+  more();
+</script>
+{% endblock %}

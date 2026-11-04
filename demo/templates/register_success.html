@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Account created - Acme Portal{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Account created</h1>
+  <div class="success" role="status">Welcome aboard, {{ values.full_name }}! A confirmation was sent to {{ values.email }}.</div>
+  <p>Account type: {{ values.account_type }}{% if values.company %} ({{ values.company }}){% endif %}</p>
+  <p>Country: {{ values.country or 'Not specified' }}</p>
+</div>
+{% endblock %}

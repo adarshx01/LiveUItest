@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Notifications{% endblock %}
+{% block content %}
+<div class="card"><h1>Notifications</h1>
+  <div id="root"><p class="loading" aria-busy="true">Loading notifications…</p></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  // simulates a client-rendered (React-like) view: content arrives late and re-renders on interaction
+  var items = ['Invoice #2041 is ready', 'Password changed', 'New login from Chrome'];
+  function render() {
+    var root = document.getElementById('root');
+    root.innerHTML = '';
+    var ul = document.createElement('ul'); ul.setAttribute('aria-label', 'Notification list');
+    items.forEach(function (t, i) {
+      var li = document.createElement('li'); li.textContent = t + ' ';
+      var b = document.createElement('button'); b.className = 'secondary'; b.textContent = 'Dismiss'; b.setAttribute('aria-label', 'Dismiss ' + t);
+      b.setAttribute('data-gt', 'dismiss-' + i);
+      b.onclick = function () { items.splice(i, 1); setTimeout(render, 150); };
+      li.appendChild(b); ul.appendChild(li);
+    });
+    root.appendChild(ul);
+    var mark = document.createElement('button'); mark.textContent = 'Mark all as read'; mark.setAttribute('data-gt', 'mark-all');
+    mark.onclick = function () { items = []; root.innerHTML = '<p role="status">All caught up!</p>'; };
+    root.appendChild(mark);
+  }
+  setTimeout(render, 1500);
+</script>
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Profile saved - Acme Portal{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Profile saved</h1>
+  <div class="success" role="status">Your profile has been updated successfully.</div>
+  <table aria-label="Saved profile">
+    {% for k, v in values.items() %}<tr><th>{{ k }}</th><td>{{ v }}</td></tr>{% endfor %}
+  </table>
+</div>
+{% endblock %}

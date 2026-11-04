@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Shop - Acme Portal{% endblock %}
+{% block content %}
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h1>Products</h1>
+    <a href="/cart" data-gt="shop-cart">Cart ({{ cart_count }})</a>
+  </div>
+  <form method="get" action="/shop" role="search" aria-label="Product search" class="row" style="align-items:flex-end">
+    <div><label for="q">Search products</label><input id="q" name="q" type="search" value="{{ q }}" data-gt="shop-search"></div>
+    <div><label for="category">Category</label>
+      <select id="category" name="category" onchange="this.form.submit()" data-gt="shop-category"><option value="">All categories</option>
+      {% for c in categories %}<option {% if c == category %}selected{% endif %}>{{ c }}</option>{% endfor %}</select></div>
+    <div style="flex:0"><button type="submit" data-gt="shop-search-btn">Search</button></div>
+  </form>
+  <p class="muted" role="status">{{ total }} products found</p>
+  <table aria-label="Products">
+    <thead><tr><th>Product</th><th>Category</th><th>Price</th><th></th></tr></thead>
+    <tbody>
+    {% for p in products %}
+      <tr><td>{{ p.name }}</td><td>{{ p.category }}</td><td>${{ p.price }}</td>
+      <td><form method="post" action="/cart/add"><input type="hidden" name="product_id" value="{{ p.id }}"><button type="submit" class="secondary" data-gt="add-{{ p.id }}">Add to cart</button></form></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <nav aria-label="Pagination" style="margin-top:12px">
+    {% if page > 1 %}<a href="/shop?q={{ q }}&category={{ category }}&page={{ page - 1 }}" data-gt="page-prev">Previous</a>{% endif %}
+    {% for n in range(1, pages + 1) %}<a href="/shop?q={{ q }}&category={{ category }}&page={{ n }}" {% if n == page %}aria-current="page"{% endif %} data-gt="page-{{ n }}" style="margin:0 6px">{{ n }}</a>{% endfor %}
+    {% if page < pages %}<a href="/shop?q={{ q }}&category={{ category }}&page={{ page + 1 }}" data-gt="page-next">Next</a>{% endif %}
+  </nav>
+</div>
+{% endblock %}

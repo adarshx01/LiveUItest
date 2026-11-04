@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Documents{% endblock %}
+{% block content %}
+<div class="card"><h1>Documents</h1>
+  <label for="doc">Upload document</label>
+  <input id="doc" type="file" onchange="document.getElementById('up').textContent = 'Uploaded: ' + Array.from(this.files).map(f => f.name).join(', ')" data-gt="upload-input">
+  <p id="up" role="status" class="muted">No file uploaded</p>
+  <p><a href="/files/report.csv" download data-gt="download-report">Download report</a></p>
+</div>
+{% endblock %}

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Welcome back - Acme Portal{% endblock %}
+{% block header_login %}<button class="secondary" onclick="alert('SSO is not configured')" data-gt="v2-sso">Sign in with SSO</button>{% endblock %}
+{% block content %}
+<section class="card" style="max-width:480px;margin:auto" aria-labelledby="auth-title">
+  <h2 id="auth-title">Welcome back</h2>
+  <p class="muted">Use your account credentials to continue.</p>
+  {% if error %}<div class="alert" role="alert" data-gt="login-error">{{ error }}</div>{% endif %}
+  <form method="post" action="/login" class="auth-v2" aria-label="Account access">
+    <div class="field">
+      <label for="user_identifier">Username or email</label>
+      <input id="user_identifier" name="identifier" type="text" value="{{ identifier }}" data-testid="auth-identifier" data-gt="login-username">
+    </div>
+    <div class="field">
+      <label for="user_secret">Password</label>
+      <input id="user_secret" name="password" type="password" data-testid="auth-secret" data-gt="login-password">
+    </div>
+    <div class="check"><input type="checkbox" id="keep" name="remember" data-gt="login-remember"><label for="keep">Keep me signed in</label></div>
+    <div class="row" style="margin-top:14px">
+      <button type="button" class="secondary" onclick="alert('Google sign-in unavailable')" data-gt="v2-google">Continue with Google</button>
+      <button type="submit" id="auth-continue" data-testid="auth-continue" data-gt="login-submit">Log in</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

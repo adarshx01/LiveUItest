@@ -1,0 +1,9 @@
+<!doctype html><html><head><title>Newsletter frame</title><style>body{font-family:system-ui;padding:12px} input{padding:8px;width:70%} button{padding:8px 14px}</style></head>
+<body>
+<h2>Subscribe to our newsletter</h2>
+<form onsubmit="event.preventDefault(); document.getElementById('nl_status').textContent='Subscribed: ' + document.getElementById('nl_email').value;">
+  <label for="nl_email">Newsletter email</label><br>
+  <input id="nl_email" type="email" data-gt="iframe-email"> <button type="submit" data-gt="iframe-subscribe">Subscribe</button>
+</form>
+<p id="nl_status" role="status"></p>
+</body></html>

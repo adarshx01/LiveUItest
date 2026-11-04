@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Shapes{% endblock %}
+{% block content %}
+<div class="card"><h1>Shape editor</h1>
+  <canvas id="c" width="600" height="300" style="border:1px solid #e3e6ef;border-radius:8px;background:#fff" data-gt="canvas"></canvas>
+  <p id="sel" role="status">Selected: none</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  var c = document.getElementById('c'), ctx = c.getContext('2d');
+  var shapes = [
+    {name: 'red circle', color: '#e02424', kind: 'circle', x: 110, y: 150, r: 50},
+    {name: 'blue square', color: '#1c64f2', kind: 'rect', x: 250, y: 100, w: 100, h: 100},
+    {name: 'green triangle', color: '#0e9f6e', kind: 'tri', x: 470, y: 90, s: 110},
+  ];
+  shapes.forEach(function (s) {
+    ctx.fillStyle = s.color; ctx.beginPath();
+    if (s.kind === 'circle') { ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); }
+    else if (s.kind === 'rect') { ctx.rect(s.x, s.y, s.w, s.h); }
+    else { ctx.moveTo(s.x, s.y); ctx.lineTo(s.x - s.s / 2, s.y + s.s); ctx.lineTo(s.x + s.s / 2, s.y + s.s); ctx.closePath(); }
+    ctx.fill();
+  });
+  c.addEventListener('click', function (e) {
+    var r = c.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, hit = 'none';
+    shapes.forEach(function (s) {
+      if (s.kind === 'circle' && Math.hypot(x - s.x, y - s.y) <= s.r) hit = s.name;
+      if (s.kind === 'rect' && x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h) hit = s.name;
+      if (s.kind === 'tri' && y >= s.y && y <= s.y + s.s && Math.abs(x - s.x) <= (y - s.y) / 2) hit = s.name;
+    });
+    document.getElementById('sel').textContent = 'Selected: ' + hit;
+  });
+</script>
+{% endblock %}

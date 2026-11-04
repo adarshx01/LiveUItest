@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Edit profile - Acme Portal{% endblock %}
+{% block head %}
+<style>
+  .combo { position:relative; }
+  .combo [role=listbox] { position:absolute; z-index:10; left:0; right:0; background:#fff; border:1px solid #c9cedb; border-radius:7px; margin:2px 0 0; padding:4px 0; list-style:none; max-height:180px; overflow:auto; }
+  .combo [role=option] { padding:7px 11px; cursor:pointer; font-size:14px; } .combo [role=option]:hover { background:#eef0f6; }
+  .combo .trigger { width:100%; text-align:left; background:#fff; color:var(--ink); border:1px solid #c9cedb; }
+  .switch { display:inline-flex; align-items:center; gap:8px; cursor:pointer; }
+</style>
+{% endblock %}
+{% block content %}
+<form method="post" action="/profile" aria-label="Profile form">
+  <section class="card" aria-labelledby="personal">
+    <h2 id="personal">Personal details</h2>
+    <div class="row">
+      <div><label for="p_name">Full Name</label><input id="p_name" name="full_name" type="text" required data-gt="p-name"></div>
+      <div><label for="p_email">Email Address</label><input id="p_email" name="email" type="email" required data-gt="p-email"></div>
+    </div>
+    <div class="row">
+      <div><label for="p_phone">Phone Number</label><input id="p_phone" name="phone" type="tel" placeholder="+91 98765 43210" data-gt="p-phone"></div>
+      <div><label for="p_dob">Date of birth</label><input id="p_dob" name="dob" type="date" data-gt="p-dob"></div>
+    </div>
+  </section>
+  <section class="card" aria-labelledby="address">
+    <h2 id="address">Address</h2>
+    <div class="row">
+      <div><label for="p_country">Country</label>
+        <select id="p_country" name="country" data-gt="p-country"><option value="">Select country</option>
+        {% for c in countries %}<option>{{ c }}</option>{% endfor %}</select></div>
+      <div><label for="p_state">State</label>
+        <select id="p_state" name="state" disabled data-gt="p-state"><option value="">Select state</option></select></div>
+      <div><span class="muted" id="city_label" style="display:block;margin:12px 0 4px">City</span>
+        <div class="combo" id="city_combo">
+          <button type="button" class="trigger" role="combobox" aria-labelledby="city_label" aria-expanded="false" aria-controls="city_list" id="city_trigger" disabled data-gt="p-city">Select city</button>
+          <input type="hidden" name="city" id="city_value">
+          <div id="city_popup" hidden>
+            <input type="search" id="city_search" aria-label="Search cities" placeholder="Type to filter" data-gt="p-city-search">
+            <ul role="listbox" id="city_list" aria-label="Cities"></ul>
+          </div>
+        </div></div>
+    </div>
+  </section>
+  <section class="card" aria-labelledby="employment">
+    <h2 id="employment">Employment</h2>
+    <fieldset style="border:0;padding:0"><legend class="muted">Employment Type</legend>
+      <div class="check"><input type="radio" id="emp_ft" name="employment_type" value="Full-time" data-gt="p-emp-ft"><label for="emp_ft">Full-time</label></div>
+      <div class="check"><input type="radio" id="emp_pt" name="employment_type" value="Part-time" data-gt="p-emp-pt"><label for="emp_pt">Part-time</label></div>
+      <div class="check"><input type="radio" id="emp_se" name="employment_type" value="Self-employed" data-gt="p-emp-se"><label for="emp_se">Self-employed</label></div>
+    </fieldset>
+    <fieldset style="border:0;padding:0;margin-top:10px"><legend class="muted">Skills</legend>
+      <div class="check"><input type="checkbox" id="sk_py" name="skills" value="Python" data-gt="p-skill-python"><label for="sk_py">Python</label></div>
+      <div class="check"><input type="checkbox" id="sk_js" name="skills" value="JavaScript" data-gt="p-skill-js"><label for="sk_js">JavaScript</label></div>
+      <div class="check"><input type="checkbox" id="sk_sql" name="skills" value="SQL" data-gt="p-skill-sql"><label for="sk_sql">SQL</label></div>
+    </fieldset>
+    <label for="p_bio">Bio</label><textarea id="p_bio" name="bio" rows="3" data-gt="p-bio"></textarea>
+    <div style="margin-top:12px"><span class="switch"><button type="button" role="switch" aria-checked="false" aria-label="Subscribe to newsletter" id="newsletter" class="secondary" data-gt="p-newsletter">Off</button> Subscribe to newsletter</span>
+      <input type="hidden" name="newsletter" id="newsletter_value" value="no"></div>
+  </section>
+  <p><button type="submit" data-gt="p-save">Save profile</button></p>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+  var STATES = {{ states_json | safe }};
+  var country = document.getElementById('p_country'), state = document.getElementById('p_state');
+  var trigger = document.getElementById('city_trigger'), popup = document.getElementById('city_popup');
+  var list = document.getElementById('city_list'), search = document.getElementById('city_search');
+  country.addEventListener('change', function () {
+    state.innerHTML = '<option value="">Select state</option>';
+    (STATES[country.value] || []).forEach(function (s) { var o = document.createElement('option'); o.textContent = s; state.appendChild(o); });
+    state.disabled = !(STATES[country.value] || []).length;
+    trigger.disabled = true; trigger.textContent = 'Select city'; document.getElementById('city_value').value = '';
+  });
+  state.addEventListener('change', function () { trigger.disabled = !state.value; trigger.textContent = 'Select city'; });
+  function loadCities(q) {
+    fetch('/api/cities?state=' + encodeURIComponent(state.value) + '&q=' + encodeURIComponent(q || '')).then(function (r) { return r.json(); }).then(function (cities) {
+      list.innerHTML = '';
+      cities.forEach(function (c) {
+        var li = document.createElement('li'); li.setAttribute('role', 'option'); li.textContent = c; li.setAttribute('aria-selected', 'false');
+        li.setAttribute('data-gt', 'p-city-option');
+        li.addEventListener('click', function () {
+          document.getElementById('city_value').value = c; trigger.textContent = c; popup.hidden = true; trigger.setAttribute('aria-expanded', 'false');
+        });
+        list.appendChild(li);
+      });
+    });
+  }
+  trigger.addEventListener('click', function () {
+    var open = popup.hidden; popup.hidden = !open; trigger.setAttribute('aria-expanded', String(open));
+    if (open) { search.value = ''; loadCities(''); }
+  });
+  search.addEventListener('input', function () { loadCities(search.value); });
+  var nl = document.getElementById('newsletter');
+  nl.addEventListener('click', function () {
+    var on = nl.getAttribute('aria-checked') !== 'true'; nl.setAttribute('aria-checked', String(on)); nl.textContent = on ? 'On' : 'Off';
+    document.getElementById('newsletter_value').value = on ? 'yes' : 'no';
+  });
+</script>
+{% endblock %}

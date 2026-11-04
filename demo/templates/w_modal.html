@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Modal dialogs{% endblock %}
+{% block head %}<style>
+  .backdrop { position:fixed; inset:0; background:rgba(20,24,40,.45); display:flex; align-items:center; justify-content:center; z-index:20; }
+  .backdrop[hidden] { display:none; } .modal { background:#fff; border-radius:10px; padding:22px; width:380px; }
+</style>{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Account settings</h1>
+  <button onclick="document.getElementById('settings').hidden=false" data-gt="open-settings">Open settings</button>
+  <button class="secondary" onclick="alert('Profile saved')" data-gt="alert-btn">Show alert</button>
+  <button class="secondary" onclick="document.getElementById('r').textContent = confirm('Delete draft?') ? 'Draft deleted' : 'Deletion cancelled'" data-gt="confirm-btn">Delete draft</button>
+  <p id="r" role="status"></p>
+</div>
+<div class="backdrop" id="settings" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings_title">
+    <h2 id="settings_title">Settings</h2>
+    <label for="display_name">Display name</label><input id="display_name" type="text" data-gt="modal-display-name">
+    <p><button onclick="document.getElementById('confirm').hidden=false" data-gt="modal-save">Save</button>
+       <button class="secondary" onclick="document.getElementById('settings').hidden=true" data-gt="modal-close">Close</button></p>
+  </div>
+</div>
+<div class="backdrop" id="confirm" hidden style="z-index:30">
+  <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm_title">
+    <h2 id="confirm_title">Confirm changes</h2><p>Are you sure you want to save these settings?</p>
+    <button onclick="document.getElementById('confirm').hidden=true;document.getElementById('settings').hidden=true;document.getElementById('r').textContent='Settings saved for ' + document.getElementById('display_name').value" data-gt="confirm-yes">Yes, save</button>
+    <button class="secondary" onclick="document.getElementById('confirm').hidden=true" data-gt="confirm-no">Cancel</button>
+  </div>
+</div>
+{% endblock %}

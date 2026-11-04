@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Shipping destination{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Shipping destination</h1>
+  <label for="dest">Destination country</label>
+  <div style="position:relative">
+    <input id="dest" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="dest_list" autocomplete="off" data-gt="ac-input">
+    <ul id="dest_list" role="listbox" aria-label="Suggestions" hidden style="list-style:none;margin:2px 0 0;padding:4px 0;border:1px solid #c9cedb;border-radius:7px;background:#fff"></ul>
+  </div>
+  <p id="chosen" role="status" class="muted">No destination selected</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  var input = document.getElementById('dest'), list = document.getElementById('dest_list'), timer;
+  input.addEventListener('input', function () {
+    clearTimeout(timer);
+    timer = setTimeout(function () {
+      if (!input.value) { list.hidden = true; input.setAttribute('aria-expanded', 'false'); return; }
+      fetch('/api/countries?q=' + encodeURIComponent(input.value)).then(function (r) { return r.json(); }).then(function (items) {
+        list.innerHTML = '';
+        items.forEach(function (c) {
+          var li = document.createElement('li'); li.setAttribute('role', 'option'); li.textContent = c; li.style.padding = '6px 10px'; li.style.cursor = 'pointer';
+          li.setAttribute('data-gt', 'ac-option');
+          li.addEventListener('click', function () { input.value = c; list.hidden = true; input.setAttribute('aria-expanded', 'false');
+            document.getElementById('chosen').textContent = 'Shipping to ' + c; });
+          list.appendChild(li);
+        });
+        list.hidden = !items.length; input.setAttribute('aria-expanded', String(!!items.length));
+      });
+    }, 250);
+  });
+</script>
+{% endblock %}

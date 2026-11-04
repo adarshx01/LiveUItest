@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Create account - Acme Portal{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Create your account</h1>
+  {% if errors %}<div class="alert" role="alert" data-gt="register-errors">Please fix the highlighted fields.</div>{% endif %}
+  <form method="post" action="/register" aria-label="Registration form" novalidate>
+    <div class="row">
+      <div><label for="full_name">Full name</label>
+        <input id="full_name" name="full_name" type="text" autocomplete="name" value="{{ values.full_name or '' }}" data-gt="reg-full-name">
+        {% if errors.full_name %}<div class="error">{{ errors.full_name }}</div>{% endif %}</div>
+      <div><label for="reg_email">Email</label>
+        <input id="reg_email" name="email" type="email" autocomplete="email" value="{{ values.email or '' }}" data-gt="reg-email">
+        {% if errors.email %}<div class="error">{{ errors.email }}</div>{% endif %}</div>
+    </div>
+    <div class="row">
+      <div><label for="reg_password">Password</label>
+        <input id="reg_password" name="password" type="password" autocomplete="new-password" data-gt="reg-password">
+        {% if errors.password %}<div class="error">{{ errors.password }}</div>{% endif %}</div>
+      <div><label for="confirm_password">Confirm password</label>
+        <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" data-gt="reg-confirm">
+        {% if errors.confirm_password %}<div class="error">{{ errors.confirm_password }}</div>{% endif %}</div>
+    </div>
+    <fieldset style="border:0;padding:0;margin-top:12px">
+      <legend class="muted">Account type</legend>
+      <div class="check"><input type="radio" id="acct_ind" name="account_type" value="Individual" {% if values.account_type != 'Business' %}checked{% endif %} data-gt="reg-individual"><label for="acct_ind">Individual</label></div>
+      <div class="check"><input type="radio" id="acct_bus" name="account_type" value="Business" {% if values.account_type == 'Business' %}checked{% endif %} data-gt="reg-business"><label for="acct_bus">Business</label></div>
+    </fieldset>
+    <div id="company_section" {% if values.account_type != 'Business' %}hidden{% endif %}>
+      <label for="company">Company name</label>
+      <input id="company" name="company" type="text" value="{{ values.company or '' }}" data-gt="reg-company">
+      {% if errors.company %}<div class="error">{{ errors.company }}</div>{% endif %}
+    </div>
+    <label for="reg_country">Country</label>
+    <select id="reg_country" name="country" data-gt="reg-country">
+      <option value="">Select a country</option>
+      {% for c in countries %}<option {% if values.country == c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+    </select>
+    <div class="check"><input type="checkbox" id="terms" name="terms" value="yes" data-gt="reg-terms"><label for="terms">I agree to the Terms and Conditions</label></div>
+    {% if errors.terms %}<div class="error">{{ errors.terms }}</div>{% endif %}
+    <p><button type="submit" data-gt="reg-submit">Create account</button></p>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  document.querySelectorAll('input[name=account_type]').forEach(function (r) {
+    r.addEventListener('change', function () { document.getElementById('company_section').hidden = r.value !== 'Business' || !r.checked; });
+  });
+</script>
+{% endblock %}

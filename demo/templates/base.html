@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Acme Portal{% endblock %}</title>
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --ink:#1d2333; --muted:#5b6478; --brand:#3355ff; --danger:#d33; --ok:#138a4a; --line:#e3e6ef; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  header.top { display:flex; align-items:center; justify-content:space-between; padding:12px 24px; background:#fff; border-bottom:1px solid var(--line); }
+  header.top .brand { font-weight:700; font-size:18px; color:var(--brand); text-decoration:none; }
+  header.top nav a, header.top nav button { margin-left:14px; color:var(--ink); text-decoration:none; font-size:14px; }
+  main { max-width: 980px; margin: 28px auto; padding: 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:22px; margin-bottom:18px; }
+  label { display:block; font-size:14px; margin: 12px 0 4px; color:var(--muted); }
+  input[type=text], input[type=email], input[type=password], input[type=tel], input[type=date], input[type=search], select, textarea {
+    width:100%; padding:9px 11px; border:1px solid #c9cedb; border-radius:7px; font-size:14px; background:#fff; }
+  button, .btn { background:var(--brand); color:#fff; border:0; border-radius:7px; padding:9px 16px; font-size:14px; cursor:pointer; }
+  button.secondary, .btn.secondary { background:#eef0f6; color:var(--ink); }
+  button.danger { background:var(--danger); }
+  .row { display:flex; gap:16px; flex-wrap:wrap; } .row > * { flex:1; min-width:200px; }
+  .error { color:var(--danger); font-size:13px; margin-top:4px; }
+  .alert { padding:10px 14px; border-radius:7px; background:#fde8e8; color:#8a1f1f; margin-bottom:12px; }
+  .success { padding:10px 14px; border-radius:7px; background:#e6f6ec; color:#0f5a32; margin-bottom:12px; }
+  table { width:100%; border-collapse:collapse; } th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); font-size:14px; }
+  .muted { color:var(--muted); font-size:13px; }
+  .check { display:flex; align-items:center; gap:8px; margin-top:10px; } .check label { margin:0; color:var(--ink); }
+  .cookie { position:fixed; left:0; right:0; bottom:0; background:#1d2333; color:#fff; padding:16px 24px; display:flex; justify-content:space-between; align-items:center; z-index:50; }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/" data-gt="nav-home">Acme Portal</a>
+  <nav aria-label="Main navigation">
+    <a href="/shop" data-gt="nav-shop">Shop</a>
+    <a href="/widgets" data-gt="nav-widgets">Widgets</a>
+    {% if user %}
+      <a href="/dashboard" data-gt="nav-dashboard">Dashboard</a>
+      <a href="/logout" data-gt="nav-logout">Log out</a>
+    {% else %}
+      <a href="/register" data-gt="nav-register">Register</a>
+      {% block header_login %}<button class="secondary" onclick="location.href='/login'" data-gt="nav-login">Login</button>{% endblock %}
+    {% endif %}
+  </nav>
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+<script>
+  (function () {
+    function report(type, target) {
+      try {
+        var el = target && target.closest ? target.closest('[data-gt]') : null;
+        var payload = JSON.stringify({type: type, gt: el ? el.getAttribute('data-gt') : null,
+          tag: target && target.tagName, path: location.pathname,
+          value: target && target.type === 'password' ? '***' : (target && target.value ? String(target.value).slice(0, 40) : null)});
+        navigator.sendBeacon('/__events', new Blob([payload], {type: 'application/json'}));
+      } catch (e) {}
+    }
+    document.addEventListener('click', function (e) { report('click', e.target); }, true);
+    document.addEventListener('change', function (e) { report('change', e.target); }, true);
+  })();
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
