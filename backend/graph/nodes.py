@@ -652,6 +652,11 @@ async def final_assertions(state: TestExecutionState, config: Any = None) -> dic
 async def evaluate_test_result(state: TestExecutionState, config: Any = None) -> dict[str, Any]:
     runtime = runtime_registry.get(state["execution_id"])
     spec = TestSpec.model_validate(state["test_spec"]) if state.get("test_spec") else None
+    if runtime is not None:
+        for result in runtime.results.values():
+            if result.status in (StepStatus.RUNNING, StepStatus.PENDING):
+                result.status = StepStatus.BLOCKED
+                result.message = state.get("blocked_reason") or "execution stopped before this step completed"
     steps: list[StepResult] = []
     if runtime is not None:
         for s in (spec.flat_steps() if spec else []):
@@ -667,8 +672,12 @@ async def evaluate_test_result(state: TestExecutionState, config: Any = None) ->
     original_ok = all(not r.recovery for r in steps)
     final = {"outcome": outcome.value, "reason": reason, "original_strategy_succeeded": original_ok,
              "recovered_steps": sum(1 for r in steps if r.recovered)}
-    return {"phase": "evaluated", "final_result": final, "execution_status": "COMPLETED"
-            if state.get("execution_status") not in ("CANCELLED",) else "CANCELLED"}
+    update: dict[str, Any] = {"phase": "evaluated", "final_result": final,
+                              "execution_status": "COMPLETED" if state.get("execution_status") not in ("CANCELLED",)
+                              else "CANCELLED"}
+    if runtime is not None:
+        update["step_results"] = _results_dict(runtime)
+    return update
 
 
 @node("persist_test_memory")

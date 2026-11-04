@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from backend.agents.grounding.locator_strategy import LocatorStrategy, StrategyResolution, resolve_strategy
-from backend.agents.grounding.text_match import similarity, split_identifier
+from backend.agents.grounding.text_match import similarity, split_identifier, strip_badge
 from backend.agents.planner.lexicon import ACTION_ROLE_COMPAT, normalize_text, purpose_compatible
 from backend.core.config import ConfidenceThresholds, get_settings
 from backend.dsl.models import ActionType, Step, TargetSpec
@@ -82,6 +82,9 @@ def _element_texts(el: InventoryElement) -> list[tuple[str, float]]:
     texts: list[tuple[str, float]] = []
     if el.name:
         texts.append((el.name, 1.0))
+        core = strip_badge(el.name)
+        if core != el.name:
+            texts.append((core, 0.97))
     if el.label and el.label != el.name:
         texts.append((el.label, 0.97))
     if el.placeholder:
@@ -104,14 +107,32 @@ def _element_texts(el: InventoryElement) -> list[tuple[str, float]]:
 
 def name_score(target: TargetSpec, el: InventoryElement) -> tuple[float, str]:
     best, why = 0.0, ""
-    if target.exact_name and el.name and el.name.strip() == target.exact_name.strip():
-        return 1.0, f"accessible name equals '{target.exact_name}'"
+    if target.exact_name:
+        visible_name = (el.name or el.text or "").strip()
+        if visible_name and normalize_text(visible_name) == normalize_text(target.exact_name):
+            return 1.0, f"name equals '{target.exact_name}'"
     for phrase, pw in _target_phrases(target):
         for text, tw in _element_texts(el):
             s = similarity(phrase, text) * pw * tw
             if s > best:
                 best, why = s, f"'{phrase}' ~ '{text[:40]}' ({s:.2f})"
     return round(best, 4), why
+
+
+def _is_specific(target: TargetSpec) -> bool:
+    """True when the instruction names a particular control rather than a generic purpose."""
+
+    if target.exact_name:
+        return True
+    if not target.purpose:
+        return True
+    from backend.agents.planner.lexicon import PURPOSES
+
+    intent_tokens = set(normalize_text(target.intent).split())
+    for phrase in PURPOSES[target.purpose].phrases:
+        if intent_tokens <= set(phrase.split()) | {"field", "button", "link", "input", "box"}:
+            return False
+    return len(intent_tokens) > 1
 
 
 def _role_score(target: TargetSpec, el: InventoryElement, action: str) -> float:
@@ -231,7 +252,10 @@ def _hard_excluded(step: Step, target: TargetSpec, el: InventoryElement, action:
     if action in ("check", "uncheck") and el.role not in TOGGLE_ROLES and not (el.role == "button" and
                                                                                el.checked is not None):
         return "not a toggle"
-    if action == "upload" and not (el.input_type == "file" or el.semantic_purpose == "upload"):
+    if el.tag == "label" and action != "click":
+        return "label proxy of a form control"
+    if action == "upload" and not (el.input_type == "file" or (el.role == "button" and el.semantic_purpose == "upload"
+                                                               and el.tag != "label")):
         return "not a file input"
     if el.role in ("heading", "paragraph", "status", "alert", "row", "cell", "listitem", "form", "iframe", "group",
                    "region", "list", "table", "dialog", "alertdialog") and action in ("click", "fill", "type",
@@ -268,6 +292,7 @@ class ElementGrounder:
         rejected: dict[str, str] = {}
         submit_form_ref = ctx.previous_form_ref if any(n.startswith("submits_form_group") for n in step.notes) else None
         has_name_target = bool(_target_phrases(target))
+        specific_name = _is_specific(target)
         for el in observation.elements:
             reason = _hard_excluded(step, target, el, action, ctx)
             if reason:
@@ -309,12 +334,21 @@ class ElementGrounder:
             if vis is not None:
                 features["visual"] = vis
                 identity_parts.append(vis * 0.85)
-            identity = 1.0
-            for part in identity_parts:
-                identity *= (1.0 - max(0.0, min(1.0, part)))
-            identity = 1.0 - identity if identity_parts else 0.5
+            # Identity: the strongest evidence, corroborated by the others. When the instruction names a
+            # *specific* control ("Dismiss Password changed"), purpose is shared by its siblings and may
+            # only corroborate; for generic references ("the username field") purpose carries identity.
+            name_part = features.get("name", 0.0)
+            purpose_part = features.get("purpose", 0.0) * (0.95 if not specific_name else 0.72)
+            others = [p for k, p in (("option", features.get("option")), ("visual", features.get("visual")))
+                      if p is not None]
+            strongest = max([name_part, purpose_part, *[o * 0.95 for o in others]]) if identity_parts else 0.5
+            support = sorted([name_part, purpose_part, *others], reverse=True)
+            identity = min(1.0, strongest + 0.1 * (support[1] if len(support) > 1 else 0.0)) \
+                if identity_parts else 0.5
             if purpose_conflict:
                 identity *= 0.65
+            if el.tag == "label":
+                identity *= 0.8  # clicking a label is a proxy; prefer the control it labels
             if opt is not None and opt < 0.2:
                 identity *= 0.5  # this dropdown does not offer the requested option
             features["identity"] = round(identity, 4)

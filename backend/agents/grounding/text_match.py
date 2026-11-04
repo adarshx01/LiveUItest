@@ -21,6 +21,16 @@ def token_set(text: str) -> frozenset[str]:
     return frozenset(_stem(t) for t in normalize_text(text).split() if t and t not in STOPWORDS)
 
 
+BADGE_RE = re.compile(r"\s*(?:\(\s*\d+\s*\)|\[\s*\d+\s*\]|·\s*\d+|\d+\s*(?:new|items?)?)\s*$", re.IGNORECASE)
+
+
+def strip_badge(text: str) -> str:
+    """'Cart (3)' -> 'Cart', 'Inbox [12]' -> 'Inbox' (counts are data, not identity)."""
+
+    stripped = BADGE_RE.sub("", text or "").strip()
+    return stripped or (text or "")
+
+
 @lru_cache(maxsize=50000)
 def similarity(a: str, b: str) -> float:
     """Symmetric-ish similarity in [0, 1] tuned for UI labels."""
@@ -34,10 +44,11 @@ def similarity(a: str, b: str) -> float:
     if compact_a == compact_b:  # "log in" vs "login", "sign in" vs "signin"
         return 0.95
     best = 0.0
+    # a phrase embedded in a longer label is weaker evidence the more extra words the label has
     if re.search(rf"(^|\s){re.escape(na)}(\s|$)", nb):
-        best = max(best, 0.72 + 0.23 * len(na) / len(nb))
+        best = max(best, 0.66 + 0.28 * len(na) / len(nb))
     if re.search(rf"(^|\s){re.escape(nb)}(\s|$)", na):
-        best = max(best, 0.62 + 0.23 * len(nb) / len(na))
+        best = max(best, 0.6 + 0.25 * len(nb) / len(na))
     ta, tb = token_set(na), token_set(nb)
     if ta and tb:
         inter = len(ta & tb)

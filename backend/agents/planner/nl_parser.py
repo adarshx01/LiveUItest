@@ -817,8 +817,10 @@ _COMPOUND_VERBS = (r"(?:click|press|enter|type|fill|select|choose|pick|check|unc
 def split_compound(line: str) -> list[str]:
     protected = QUOTE_RE.sub(lambda m: m.group(0).replace(" and ", " \x00and\x00 ").replace(",", "\x01")
                              .replace(" then ", " \x00then\x00 "), line)
-    parts = re.split(rf"\s*(?:,?\s+and\s+then\s+|,\s*then\s+|;\s*|\s+then\s+(?={_COMPOUND_VERBS}\b)|"
-                     rf",?\s+and\s+(?={_COMPOUND_VERBS}\b)|,\s*(?={_COMPOUND_VERBS}\b))", protected, flags=re.IGNORECASE)
+    # a verb only starts a new instruction when it has an object: "Click Yes, save" is one button label
+    parts = re.split(rf"\s*(?:,?\s+and\s+then\s+|,\s*then\s+|;\s*|\s+then\s+(?={_COMPOUND_VERBS}\s+\S)|"
+                     rf",?\s+and\s+(?={_COMPOUND_VERBS}\s+\S)|,\s*(?={_COMPOUND_VERBS}\s+\S))", protected,
+                     flags=re.IGNORECASE)
     if len(parts) == 1:
         # "Enter username as abc and password as xyz"
         parts = re.split(r"\s+and\s+(?=(?:the\s+|your\s+)?[\w\s]{2,30}?\s+(?:as|with|to)\s+)", protected,
@@ -995,6 +997,8 @@ def build_target(phrase: str | None, action: str) -> TargetSpec:
         visual_hint = work.strip() or "icon"
 
     name_text = exact_name or work
+    if action in ("drag", "drop"):
+        name_text = ""  # draggable items and drop zones are content, not form controls with purposes
     preferred_kinds: tuple[str, ...] | None = None
     if element_kind in ("field", "input", "textbox", "text field", "text box", "input field", "textarea"):
         preferred_kinds = ("field",)
@@ -1011,8 +1015,11 @@ def build_target(phrase: str | None, action: str) -> TargetSpec:
     purpose = classify_phrase(name_text, kinds=preferred_kinds) if preferred_kinds else None
     if purpose is None or purpose.score < 0.6:
         fallback = classify_phrase(name_text)
-        # only accept a cross-kind purpose for read-only uses (assertions/hover) or when it is an exact phrase match
-        if fallback and (preferred_kinds is None or fallback.score >= 0.99):
+        # a cross-kind purpose is only accepted for read-only uses, or for exact phrase matches when the
+        # action can operate that kind of control ("Click Terms of Service" is a link, not the terms checkbox)
+        cross_kind_ok = action not in ("click", "double_click", "download") or \
+            (fallback is not None and PURPOSES[fallback.purpose].kind in ("action", "page"))
+        if fallback and (preferred_kinds is None or (fallback.score >= 0.99 and cross_kind_ok)):
             purpose = fallback
     purpose_name = purpose.purpose if purpose and purpose.score >= 0.6 else None
 

@@ -199,9 +199,13 @@ class PolicyEngine:
                                                             f"{t.refine:.2f}; human guidance required"],
                                       rules=["confidence_gate"])
             if risk in ("high",) and request.confidence < t.execute:
-                reasons.append(f"high-risk action with confidence {request.confidence:.2f} < {t.execute:.2f}")
-                return PolicyDecision(False, risk, requires_approval=True, reasons=reasons,
-                                      rules=["confidence_gate", "approval"])
+                key = self.approval_key(step, el)
+                env_grant = self.env.auto_approve_high_risk and self.env.environment_type != "production" \
+                    and request.confidence >= t.enhanced_verification
+                if key not in self.approved and not env_grant:
+                    reasons.append(f"high-risk action with confidence {request.confidence:.2f} < {t.execute:.2f}")
+                    return PolicyDecision(False, risk, requires_approval=True, reasons=reasons,
+                                          rules=["confidence_gate", "approval"])
             if reasons and "form submission" in reasons and request.confidence < t.enhanced_verification:
                 if not self.env.allow_form_submission:
                     return PolicyDecision(False, risk, reasons=["form submission is not permitted"],

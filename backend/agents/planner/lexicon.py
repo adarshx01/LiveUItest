@@ -219,9 +219,9 @@ ORDINALS = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3, "
 DESTRUCTIVE_WORDS = ("delete", "remove", "destroy", "erase", "purge", "terminate", "deactivate", "close account",
                      "cancel subscription", "drop", "wipe", "revoke", "trash", "discard")
 FINANCIAL_WORDS = ("pay", "purchase", "buy", "place order", "checkout", "check out", "transfer", "payment",
-                   "subscribe", "donate", "withdraw", "deposit", "confirm order", "complete purchase", "billing")
+                   "donate", "withdraw", "deposit", "confirm order", "complete purchase", "billing", "upgrade plan")
 MESSAGING_WORDS = ("send", "email", "message", "invite", "post", "publish", "share", "tweet", "notify",
-                   "broadcast", "reply")
+                   "broadcast", "reply", "subscribe")
 SUBMIT_WORDS = ("submit", "save", "register", "sign up", "create", "apply", "confirm", "update", "sign in",
                 "log in", "login", "continue", "next", "proceed", "finish", "done")
 

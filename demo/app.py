@@ -314,7 +314,9 @@ async def checkout(request: Request) -> Response:
     ids = STATE.carts.get(request.cookies.get("sid", ""), [])
     if STATE.checkout_broken:
         # deliberately broken workflow: the server fails and the UI shows a generic error
-        return render("checkout_error.html", request, status_code=500)
+        response = render("checkout_error.html", request)
+        response.status_code = 500
+        return response
     total = sum(p["price"] for pid in ids for p in PRODUCTS if p["id"] == pid)
     return render("checkout_success.html", request, total=total, order_id=f"ORD-{1000 + len(ids)}")
 
