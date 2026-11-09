@@ -1,0 +1,42 @@
+https://sampleurl.com
+1. Enter Email as testemail@email.com.
+2. Enter Password as undefind.
+3. Click on the "Login" button.
+4. Click on "Patient Support Program". 
+5. Enter Search patients as "Thomas Kutty".
+6. Click on "Thomas Kutty" in the patient table.
+7. Click on "Update Eligibility".
+8. Click on the "Coverage Type" dropdown. 
+9. Select "FOC/OOP" from the "Coverage Type" dropdown. 
+10. Click on "Copay".
+11. Enter Date of eligibility confirmation as 02/Jul/2026.
+12. Click on the "Add more" link next to "Upload Documents".
+13. Upload "C:\Users\u1226781\Downloads\FileUploadTestAsset\ImageTest.jpg" using the "Upload File(s)" link.
+14. Enter "Document Name" as "Test Document".
+15. Click on the "Save" button.
+16. Refresh the page.
+17. Click on the "BenefitPlan" tab.
+18. Click on the "Apply For MRL Creation" button.
+19. Click on the "FOC/OOP" button.
+20. Enter Paid as 2.
+21. Enter Free as 1.
+22. Select "Vyndamax" from the "Product" dropdown.
+23. Verify that the "Product" field shows "Vyndamax".
+24. Enter "Number of Packs covered" as 2.
+25. Enter "Cycle Number" as 1.
+26. Click on the right sidebar to close the "Cycle Number" dropdown.
+27. Click on the "Add more" link next to "Upload Documents".
+28. Upload "C:\Users\u1226781\Downloads\FileUploadTestAsset\TestUpload.jpg" using the "Upload File(s)" link.
+29. Enter "Document Name" as "Test".
+30. Click on the "Add" button.
+31. Refresh the page.
+32. Click on the first row under "Cycle No" in the listing.
+33. Scroll right.
+34. Click on the "Generate MRL" link.
+35. Click on the three dots icon.
+36. Click on the "View MRL" link.
+37. Click on the "Close" button.
+38. Click on the "Upload Invoice" link.
+39. Upload "C:\Users\u1226781\Downloads\FileUploadTestAsset\Recent Salary certificate or Pay slip.pdf" using the "Upload" button.
+40. Wait for the preview to appear.
+41. Click on the "Save" button.

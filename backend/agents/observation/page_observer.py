@@ -15,7 +15,7 @@ from typing import Any
 
 from backend.agents.observation.element_inventory import InventoryBuilder
 from backend.agents.observation.page_fingerprint import fingerprint
-from backend.agents.observation.page_state_analyzer import analyze_page_state
+from backend.agents.observation.page_state_analyzer import ERROR_TITLE_RE, analyze_page_state
 from backend.agents.observation.snapshot_parser import parse_snapshot
 from backend.browser.js_probes import DOM_INVENTORY, PAGE_SIGNALS
 from backend.browser.tool_adapter import BrowserToolAdapter
@@ -80,6 +80,33 @@ class PageObserver:
             await asyncio.sleep(min(0.25 * attempt, 1.0))
 
     async def observe(self, *, with_tabs: bool = True, with_signals: bool = True) -> Observation:
+        obs = await self._collect(with_tabs=with_tabs, with_signals=with_signals)
+        if not obs.page_state.error_page:
+            return obs
+        # A 401/403 (or a blank error shell) is often the first bytes of a page that is still rendering
+        # the real application. Wait, then look again, before failing the step.
+        log.info("page looks like an error; waiting for the application to render",
+                 url=obs.url, title=obs.title, http_status=obs.page_state.http_status,
+                 loading=obs.page_state.loading, elements=len(obs.elements), headings=obs.headings[:3])
+        deadline = time.monotonic() + self.SETTLE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.7)
+            nxt = await self._collect(with_tabs=with_tabs, with_signals=with_signals)
+            if not nxt.page_state.error_page:
+                log.info("application rendered after the initial error status",
+                         url=nxt.url, title=nxt.title, http_status=nxt.page_state.http_status,
+                         page_kind=nxt.page_state.page_kind, elements=len(nxt.elements))
+                return nxt
+            obs = nxt
+            blob = " ".join([obs.title, *obs.headings[:3]])
+            if not obs.page_state.loading and ERROR_TITLE_RE.search(blob):
+                break
+        log.warning("page stayed an error page", url=obs.url, title=obs.title,
+                    http_status=obs.page_state.http_status, loading=obs.page_state.loading,
+                    headings=obs.headings[:3], elements=len(obs.elements))
+        return obs
+
+    async def _collect(self, *, with_tabs: bool = True, with_signals: bool = True) -> Observation:
         observation_id = new_id("obs")
         obs = Observation(observation_id=observation_id, viewport=self.viewport, timestamp=time.time())
         snap = await self._settled_snapshot()

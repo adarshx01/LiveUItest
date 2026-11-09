@@ -209,7 +209,7 @@ class ExecutionRuntime:
         self.events = events or event_bus
         self.recorder = recorder
         self.execution_id = request.execution_id
-        self.budget: BudgetTracker = new_tracker(self.execution_id, self.settings.budget)
+        self.budget: BudgetTracker = new_tracker(self.execution_id, self._budget_for(request))
         self.session: BrowserSession | None = None
         self.observer: PageObserver | None = None
         self.executor: InteractionExecutor | None = None
@@ -252,6 +252,16 @@ class ExecutionRuntime:
         self.video_artifact: str | None = None
         self.closed = False
         self.announced: set[str] = set()
+
+    def _budget_for(self, request: ExecutionRequest) -> Any:
+        """A long form (this suite is ~200 steps) needs more than the 15-minute default or it stops mid-page."""
+
+        limits = self.settings.budget
+        step_count = len(request.spec.flat_steps()) if request.spec is not None else 0
+        needed = max(limits.execution_deadline_seconds, min(2700.0, 12.0 * max(step_count, 1)))
+        if needed == limits.execution_deadline_seconds:
+            return limits
+        return limits.model_copy(update={"execution_deadline_seconds": needed})
 
     # ------------------------------------------------------------------ lifecycle
     def bind(self) -> None:
@@ -361,9 +371,31 @@ class ExecutionRuntime:
         result.started_at = result.started_at or time.time()
         result.runner = self.runner
         self.results[step.id] = result
+        previous, following = self._adjacent_steps(step)
+        previous_result = self.results.get(previous.id) if previous is not None else None
+        expectation = None
+        if step.assertion is not None:
+            expectation = step.assertion.expected if step.assertion.expected is not None else step.assertion.type.value
+        log.info("step started", step=step.index, action=step.action.value,
+                 instruction=step.original_text[:180],
+                 expectation=str(expectation)[:80] if expectation is not None else None,
+                 previous_step=previous.index if previous else None,
+                 previous_status=previous_result.status.value if previous_result else None,
+                 previous_result=(previous_result.message[:140] if previous_result and previous_result.message else None),
+                 next_step=following.index if following else None,
+                 next_instruction=following.original_text[:140] if following else None)
         await self.emit("STEP_STARTED", step.original_text, step_id=step.id, action=step.action.value,
                         index=step.index)
         return result
+
+    def _adjacent_steps(self, step: Step) -> tuple[Step | None, Step | None]:
+        ordered = self.request.spec.flat_steps()
+        index = next((i for i, item in enumerate(ordered) if item.id == step.id), None)
+        if index is None:
+            return None, None
+        previous = ordered[index - 1] if index > 0 else None
+        following = ordered[index + 1] if index + 1 < len(ordered) else None
+        return previous, following
 
     def ensure_work(self, step: Step) -> StepWork:
         if self.work is None or self.work.step.id != step.id:
@@ -444,6 +476,10 @@ class ExecutionRuntime:
             decision.locator_strategy = {**strategy.model_dump(exclude_none=True),
                                          "selectors": strategy.selectors()[:6],
                                          "validation": validated_selectors(strategy, obs)}
+        log.info("grounded target", step=step.index, action=step.action.value,
+                 instruction=step.original_text[:140], target=decision.display,
+                 confidence=round(decision.confidence, 2), decision=decision.decision, method=decision.method,
+                 reason=(decision.reason or "")[:160])
         await self.emit("TARGET_GROUNDED", f"{decision.display or 'no target'} "
                         f"(confidence {decision.confidence:.2f}, {decision.decision})", step_id=step.id,
                         decision=decision.decision, confidence=decision.confidence, method=decision.method,
@@ -650,6 +686,10 @@ class ExecutionRuntime:
                                 value_sensitive=value_sensitive, is_recovery=work.recovery_cycles > 0)
         result = self.policy.evaluate(request)
         work.policy = result
+        if not result.allowed:
+            log.info("action not allowed", step=step.index, action=step.action.value,
+                     instruction=step.original_text[:160], confidence=round(confidence, 2),
+                     target=work.element.display() if work.element else None, reasons=result.reasons)
         await self.emit("ACTION_VALIDATED" if result.allowed else "ACTION_BLOCKED",
                         "; ".join(result.reasons)[:300], step_id=step.id, **result.to_dict())
         return result
@@ -680,6 +720,9 @@ class ExecutionRuntime:
         decision = work.decision
         if self.screenshot_policy == "every_action" and step.action not in (ActionType.WAIT,):
             work.screenshot_before = await self.screenshot(step.id, f"before-{work.attempts}", decision=decision)
+        log.info("performing action", step=step.index, action=step.action.value, attempt=work.attempts,
+                 instruction=step.original_text[:180], target=decision.display if decision else None,
+                 url=work.url_before)
         await self.emit("ACTION_STARTED", step.summary(), step_id=step.id, attempt=work.attempts,
                         target=decision.display if decision else None)
         try:
@@ -930,6 +973,9 @@ class ExecutionRuntime:
         else:
             verification = await self.verifier.verify(step, outcome, work.element, work.before, after)
         work.verification = verification
+        log.info("checked action result", step=step.index, action=step.action.value,
+                 status=verification.status, message=verification.message[:240],
+                 url=after.url, title=after.title, changed=verification.page_changed)
         if self.screenshot_policy == "every_action" or (self.screenshot_policy == "on_failure" and
                                                        verification.status == "failed"):
             work.screenshot_after = await self.screenshot(step.id, f"after-{work.attempts}")
@@ -1280,6 +1326,8 @@ class ExecutionRuntime:
         result.llm_calls = work.llm_calls
         if self.recorder is not None:
             await self.recorder.step_result(result)
+        log.info("step finished", step=step.index, action=step.action.value, status=status.value,
+                 message=message[:240], url=result.page_url)
         await self.emit("STEP_COMPLETED", f"{status.value}: {message}"[:300], step_id=step.id, status=status.value,
                         recovered=result.recovered, memory_used=result.memory_used, duration_ms=result.duration_ms)
         return result

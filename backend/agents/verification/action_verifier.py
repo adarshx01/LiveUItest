@@ -213,11 +213,15 @@ class ActionVerifier:
 
         if action in (ActionType.NAVIGATE, ActionType.GO_BACK, ActionType.RELOAD):
             status = after.page_state.http_status
-            ok = bool(after.url) and not after.page_state.error_page and (status is None or status < 400)
-            checks.append({"check": "page_loaded", "ok": ok, "detail": {"url": after.url, "status": status}})
+            # A gateway status (401/403) on a page that rendered a real application is not a failed navigation.
+            # error_page is set only when the document also looks like an error.
+            ok = bool(after.url) and not after.page_state.error_page and not after.page_state.loading
+            checks.append({"check": "page_loaded", "ok": ok, "detail": {"url": after.url, "status": status,
+                                                                        "title": after.title,
+                                                                        "error_page": after.page_state.error_page}})
             if not ok:
-                return result("failed", f"page did not load correctly (status {status})",
-                              FailureCategory.APPLICATION_ERROR if status and status >= 400 else
+                return result("failed", f"page did not load correctly (status {status}, title {after.title!r})",
+                              FailureCategory.APPLICATION_ERROR if after.page_state.error_page else
                               FailureCategory.NAVIGATION_TIMEOUT)
             return result("verified", f"loaded {after.url}")
 

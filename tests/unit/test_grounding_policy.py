@@ -13,7 +13,8 @@ from backend.agents.observation.snapshot_parser import parse_snapshot
 from backend.agents.planner.nl_parser import ParseContext, StepParser
 from backend.agents.recovery.failure_classifier import classify_failure
 from backend.agents.verification.test_oracle import evaluate_outcome
-from backend.dsl.observation import Observation
+from backend.dsl.models import ActionType
+from backend.dsl.observation import BoundingBox, InventoryElement, Observation
 from backend.dsl.results import AssertionResult, FailureCategory, StepResult, StepStatus, TestOutcome
 from backend.memory.embeddings import cosine, embed
 
@@ -199,6 +200,43 @@ def test_low_confidence_is_never_executed() -> None:
     el = next(e for e in obs.elements if e.name == "Sign In")
     decision = policy.evaluate(ActionRequest(step=step("Click Sign In"), element=el, observation=obs, confidence=0.4))
     assert not decision.allowed and "confidence_gate" in decision.rules
+
+
+def _box(x: float, y: float, w: float = 36, h: float = 18) -> BoundingBox:
+    return BoundingBox(x=x, y=y, width=w, height=h)
+
+
+def _input(element_id: str, name: str, x: float, y: float, *, value: str | None = None) -> InventoryElement:
+    return InventoryElement(element_id=element_id, ref=element_id, role="textbox", name=name, tag="input",
+                            input_type="text", editable=True, visible=True, bbox=_box(x, y),
+                            value_preview=value if value is not None else name)
+
+
+def test_range_value_is_the_input_under_the_header_not_the_header() -> None:
+    headers = [_input(letter, letter, 40 + i * 48, 200) for i, letter in enumerate("ABCDEFGHIJK")]
+    values = [_input(f"v{letter}", "", 40 + i * 48, 228, value="100.000" if letter in "AK" else "")
+              for i, letter in enumerate("ABCDEFGHIJK")]
+    numbers = [_input(f"n{n}", str(n), 40 + (n - 1) * 48, 520) for n in range(1, 12)]
+    under = [_input(f"u{n}", "", 40 + (n - 1) * 48, 548, value="0.000" if n == 1 else "") for n in range(1, 12)]
+    horizontal = InventoryElement(element_id="hdrop", ref="hdrop", role="combobox", name="Horizontal", tag="select",
+                                  visible=True, bbox=_box(40, 470, 80, 22))
+    obs = Observation(observation_id="grid", elements=[*headers, *values, horizontal, *numbers, *under])
+    grounder = ElementGrounder()
+
+    under_h = step('Click on the second row input field under column "H" and enter "14.999"')
+    decision = grounder.ground(under_h, obs, GroundingContext())
+    assert decision.element_id == "vH"
+    assert decision.confidence >= 0.9
+
+    renamed = _input("n1", "01", 40, 520, value="01")
+    obs.elements = [el for el in obs.elements if el.element_id != "n1"] + [renamed]
+    below = step('Click on the input field below "01" and enter "10.000"')
+    assert grounder.ground(below, obs, GroundingContext()).element_id == "u1"
+
+    header = step('Click on the input field "1", clear the existing value, and enter "01" below "Horizontal" dropdown')
+    fresh = Observation(observation_id="grid2", elements=[*headers, *values, horizontal, *numbers, *under])
+    assert grounder.ground(header, fresh, GroundingContext()).element_id == "n1"
+    assert under_h.action == ActionType.FILL
 
 
 def test_redaction() -> None:

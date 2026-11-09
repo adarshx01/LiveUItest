@@ -187,6 +187,120 @@ def looks_like_dropdown(el: InventoryElement) -> bool:
                 or PROMPT_RE.match(el.text or el.name or ""))
 
 
+def _grid_label(el: InventoryElement) -> set[str]:
+    return {normalize_text(part) for part in (el.name, el.label, el.value_preview, el.text) if part}
+
+
+def _is_range_input(el: InventoryElement) -> bool:
+    """A Range (%) cell is a text box. Column headers on this form are text boxes too; dropdown options are not."""
+
+    if not el.visible or el.bbox is None or el.role == "option" or el.tag == "option":
+        return False
+    if el.role in ("textbox", "spinbutton"):
+        return True
+    return el.tag == "input" and (el.input_type or "text").lower() in ("text", "number", "")
+
+
+def _same_column(anchor: InventoryElement, el: InventoryElement) -> bool:
+    if anchor.bbox is None or el.bbox is None:
+        return False
+    ax, _ = anchor.bbox.center
+    ex, _ = el.bbox.center
+    band = max(anchor.bbox.width, el.bbox.width, 16) * 0.8
+    return abs(ax - ex) <= band
+
+
+def _column_stack(observation: Observation, anchor: InventoryElement) -> list[InventoryElement]:
+    """Header plus the inputs directly under it, top to bottom. Overlapping duplicates are one cell."""
+
+    if anchor.bbox is None:
+        return []
+    cells: list[InventoryElement] = []
+    for el in observation.elements:
+        if not _is_range_input(el) or not _same_column(anchor, el):
+            continue
+        if el.bbox.y > anchor.bbox.y + anchor.bbox.height + 80:
+            continue
+        if el.bbox.y + el.bbox.height < anchor.bbox.y - 6:
+            continue
+        if any(el.bbox.iou(kept.bbox) > 0.45 for kept in cells if kept.bbox is not None):
+            continue
+        cells.append(el)
+    cells.sort(key=lambda el: (el.bbox.y if el.bbox else 0, el.bbox.x if el.bbox else 0))
+    return cells
+
+
+def _anchor_for_label(observation: Observation, label: str) -> InventoryElement | None:
+    want = normalize_text(label)
+    if not want:
+        return None
+    found = [el for el in observation.elements
+             if el.visible and el.bbox is not None and el.role != "option" and want in _grid_label(el)]
+    if not found:
+        return None
+    found.sort(key=lambda el: (0 if el.role in ("textbox", "spinbutton") else 1, el.bbox.y if el.bbox else 0))
+    return found[0]
+
+
+def _landmark(observation: Observation, hint: str | None) -> InventoryElement | None:
+    want = normalize_text(hint or "")
+    if not want:
+        return None
+    best: InventoryElement | None = None
+    best_score = 0.0
+    for el in observation.elements:
+        if not el.visible or el.bbox is None or el.role == "option":
+            continue
+        name = normalize_text(el.name or el.label or "")
+        if not name or (want != name and want not in name.split() and not name.startswith(want)):
+            continue
+        score = 1.0 if el.role == "combobox" else 0.7
+        if score > best_score:
+            best, best_score = el, score
+    return best
+
+
+def resolve_grid_cell(observation: Observation, target: TargetSpec) -> InventoryElement | None:
+    """The Range (%) value lives in the input under the column header, not in the header box itself.
+
+    ``column_row`` picks the Nth input in that column (the header is row 1 when it is itself an input).
+    ``below_label`` picks the nearest input strictly under the box named or showing the label.
+    ``labeled_below`` picks the input that currently shows the label and sits under a named control
+    (the header row, which the test then renames from 1 to 01).
+    """
+
+    hint = target.position_hint
+    label = target.exact_name or target.intent
+    if hint == "labeled_below":
+        landmark = _landmark(observation, target.context_hint)
+        matches = [el for el in observation.elements
+                   if _is_range_input(el) and normalize_text(label) in _grid_label(el)]
+        if landmark is not None and landmark.bbox is not None:
+            floor = landmark.bbox.y + landmark.bbox.height * 0.45
+            matches = [el for el in matches if el.bbox is not None and el.bbox.y + 4 >= floor]
+        matches.sort(key=lambda el: el.bbox.y if el.bbox else 0)
+        return matches[0] if matches else None
+
+    anchor = _anchor_for_label(observation, label)
+    if anchor is None:
+        return None
+    stack = _column_stack(observation, anchor)
+    if hint == "column_row":
+        row = target.ordinal or 1
+        index = row - 1 if row > 0 else len(stack) + row
+        if not stack or index < 0 or index >= len(stack):
+            return None
+        chosen = stack[index]
+        if row > 1 and chosen is anchor and len(stack) == 1:
+            return None
+        return chosen
+    if hint == "below_label":
+        below = [el for el in stack if el is not anchor and el.bbox is not None and anchor.bbox is not None
+                 and el.bbox.y >= anchor.bbox.y + anchor.bbox.height * 0.5]
+        return below[0] if below else None
+    return None
+
+
 def is_fillable(el: InventoryElement) -> bool:
     """Text fields, but also browser-rendered pickers (date, time, color, range, number) and editable regions."""
 
@@ -390,6 +504,10 @@ class ElementGrounder:
         target = target or step.target
         if target is None:
             return GroundingDecision(decision="not_found", reason="step has no target")
+        if target.position_hint in ("column_row", "below_label", "labeled_below"):
+            cell = resolve_grid_cell(observation, target)
+            if cell is not None:
+                return self._pinned(cell, observation, 0.96, "range cell under the column header")
         action = action_override or ACTION_FOR_GROUNDING.get(step.action, "click")
         modal_refs = {d.ref for d in observation.dialogs if d.modal and d.ref}
         has_modal = bool(modal_refs)
@@ -580,6 +698,18 @@ class ElementGrounder:
             bbox=el.bbox.model_dump() if el.bbox else None,
             memory_id=top.memory_id,
             reason=f"best={top.raw:.2f} margin={margin:.2f}" + (" ordinal" if ordinal_applied else ""),
+        )
+
+    def _pinned(self, el: InventoryElement, observation: Observation, confidence: float, reason: str) -> GroundingDecision:
+        return GroundingDecision(
+            element_id=el.element_id, ref=el.ref, display=el.display(), role=el.role,
+            name=el.name or el.label or "", confidence=confidence, decision=self.decide(confidence),
+            method="semantic",
+            locator_strategy=LocatorStrategy.from_element(el, observation).model_dump(exclude_none=True),
+            candidates=[GroundingCandidate(element_id=el.element_id, ref=el.ref, display=el.display(),
+                                           score=confidence, evidence=[reason],
+                                           bbox=el.bbox.model_dump() if el.bbox else None)],
+            evidence=[reason], bbox=el.bbox.model_dump() if el.bbox else None, reason=reason,
         )
 
     def decide(self, confidence: float) -> Any:

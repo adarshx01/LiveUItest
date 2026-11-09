@@ -8,7 +8,12 @@ from typing import Any
 from backend.dsl.observation import DialogInfo, FormInfo, InventoryElement, PageState
 
 ERROR_TITLE_RE = re.compile(r"\b(404|not found|500|internal server error|bad gateway|service unavailable|"
-                            r"something went wrong|application error|access denied|403 forbidden)\b", re.IGNORECASE)
+                            r"something went wrong|application error|access denied|403 forbidden|401 unauthorized)\b",
+                            re.IGNORECASE)
+
+# A document status of 401/403 is not, by itself, proof the screen is unusable. Gateways often
+# answer with those codes while the application (a sign-in form, a SPA shell) is what is on screen.
+_USABLE_ROLES = {"button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio", "switch", "tab"}
 
 
 APP_ERROR_ALERT_RE = re.compile(r"something went wrong|internal server error|unexpected error|an error occurred|"
@@ -27,8 +32,13 @@ def analyze_page_state(*, url: str, title: str, headings: list[str], elements: l
     state.http_status = (dom or {}).get("httpStatus")
     heading_text = " ".join(headings[:3])
     alert_text = " ".join(e.text or e.name for e in elements if e.role in ("alert", "alertdialog") and e.visible)
-    state.error_page = bool((state.http_status and state.http_status >= 400) or ERROR_TITLE_RE.search(title or "")
-                            or ERROR_TITLE_RE.search(heading_text) or APP_ERROR_ALERT_RE.search(alert_text))
+    text_error = bool(ERROR_TITLE_RE.search(title or "") or ERROR_TITLE_RE.search(heading_text)
+                      or APP_ERROR_ALERT_RE.search(alert_text))
+    status_error = bool(state.http_status and state.http_status >= 400)
+    interactive = sum(1 for e in elements if e.visible and e.role in _USABLE_ROLES)
+    has_entry_form = any(f.purpose in ("login", "registration") for f in forms)
+    usable = interactive >= 2 or has_entry_form
+    state.error_page = bool(text_error or (status_error and not usable))
     state.validation_errors = [e for e in (signals.get("validationErrors") or []) if e][:8]
     state.invalid_fields = [e for e in (signals.get("invalidFields") or []) if e][:10]
     modal_dialogs = [d for d in dialogs if d.modal]

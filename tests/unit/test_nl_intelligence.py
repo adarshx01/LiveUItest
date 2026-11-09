@@ -119,6 +119,68 @@ def test_redirect_assertion_is_composite() -> None:
     assert {AssertionType.URL_CONTAINS, AssertionType.ELEMENT_VISIBLE} <= kinds
 
 
+def test_page_is_displayed_checks_the_page_not_the_word_the() -> None:
+    (step,) = parse("Verify that the page is displayed.")
+    assert step.action == ActionType.ASSERT
+    assert step.assertion.type == AssertionType.PAGE_LOADED
+    assert step.assertion.expected is None
+
+
+def test_range_grid_value_goes_under_the_column_header() -> None:
+    (step,) = parse('Click on the second row input field under column "H" and enter "14.999"')
+    assert step.action == ActionType.FILL
+    assert step.value.value == "14.999"
+    assert step.target.exact_name == "H"
+    assert step.target.ordinal == 2
+    assert step.target.position_hint == "column_row"
+
+    (below,) = parse('Click on the input field below "01" and enter "10.000"')
+    assert below.action == ActionType.FILL
+    assert below.target.exact_name == "01"
+    assert below.target.position_hint == "below_label"
+    assert below.value.value == "10.000"
+
+    (header,) = parse('Click on the input field "1", clear the existing value, and enter "01" '
+                      'below "Horizontal" dropdown')
+    assert header.action == ActionType.FILL
+    assert header.target.exact_name == "1"
+    assert header.target.position_hint == "labeled_below"
+    assert header.target.context_hint == "Horizontal"
+    assert header.value.value == "01"
+
+
+def test_named_control_is_selected_is_a_radio_not_the_word_selected() -> None:
+    (step,) = parse('Verify that "Same Period Last Year" is selected')
+    assert step.assertion.type == AssertionType.RADIO_SELECTED
+    assert step.assertion.target.exact_name == "Same Period Last Year"
+
+
+def test_verify_else_runs_the_recovery_only_as_the_else_branch() -> None:
+    (step,) = parse('Verify that "10" is displayed in the "Horizontal" field else click the "Horizontal" '
+                    'dropdown and choose the "10" option')
+    assert step.action == ActionType.CONDITIONAL
+    assert step.condition.expected == "10"
+    assert step.then_steps == []
+    assert step.else_steps
+    assert step.else_steps[-1].action == ActionType.SELECT
+
+
+def test_value_word_is_not_part_of_the_expected_text() -> None:
+    (step,) = parse('Verify that the value "100.000" is displayed in the Horizontal Range (%) input '
+                    'under column "11"')
+    assert step.assertion.type == AssertionType.TEXT_VISIBLE
+    assert step.assertion.expected == "100.000"
+
+
+def test_value_in_a_field_inside_a_section_is_an_assertion() -> None:
+    (step,) = parse('Verify that "Percentage" is displayed in the "Range Type" field in the Vertical Axis section')
+    assert step.action == ActionType.ASSERT
+    assert step.assertion.type == AssertionType.TEXT_VISIBLE
+    assert step.assertion.expected == "Percentage"
+    assert step.assertion.target.context_hint == "Vertical Axis section"
+    assert "Range Type" in (step.assertion.target.exact_name or step.assertion.target.intent)
+
+
 def test_derived_user_name_expectation() -> None:
     parser = StepParser()
     ctx = ParseContext()
@@ -226,3 +288,27 @@ async def test_unparseable_instruction_is_reported_not_guessed() -> None:
     (case,) = ingest("URL: https://x.test\n1. Frobnicate the quux thoroughly\n2. Verify Done is visible")
     spec = await RequirementAnalyzer().analyze(case)
     assert any(a.severity == "blocking" for a in spec.ambiguities)
+
+
+def test_gateway_status_on_a_real_screen_is_not_an_error_page() -> None:
+    from backend.agents.observation.page_state_analyzer import analyze_page_state
+    from backend.dsl.observation import FormInfo, InventoryElement
+
+    def control(role: str, name: str) -> InventoryElement:
+        return InventoryElement(element_id=name, role=role, name=name, visible=True)
+
+    sign_in = analyze_page_state(
+        url="https://hl-demo.demohealthlink.in/sign-in", title="healthlink", headings=["Sign in"],
+        elements=[control("textbox", "Email"), control("textbox", "Password"), control("button", "Login")],
+        forms=[FormInfo(form_id="login", purpose="login")], dialogs=[], signals={"readyState": "complete"},
+        dom={"httpStatus": 403})
+    assert sign_in.http_status == 403
+    assert sign_in.error_page is False
+    assert sign_in.page_kind == "login"
+
+    denied = analyze_page_state(
+        url="https://hl-demo.demohealthlink.in/sign-in", title="403 Forbidden", headings=["Access denied"],
+        elements=[control("link", "Home")], forms=[], dialogs=[], signals={"readyState": "complete"},
+        dom={"httpStatus": 403})
+    assert denied.error_page is True
+    assert denied.page_kind == "error"

@@ -12,6 +12,7 @@ All browser access goes through here. The adapter:
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -117,6 +118,28 @@ BLOCKED_TOOLS = {"browser_run_code_unsafe", "browser_install", "browser_pdf_save
 
 AuditHook = Callable[[dict[str, Any]], Awaitable[None] | None]
 
+_TARGET_KEYS = (("target", "element"), ("startTarget", "startElement"), ("endTarget", "endElement"))
+
+
+def _refs_for_description(snapshot_yaml: str, description: str) -> list[str]:
+    """Refs in a fresh snapshot whose accessible name is the element this call was aimed at."""
+
+    quoted = re.findall(r'"([^"]+)"', description)
+    if not quoted:
+        return []
+    name = quoted[-1].strip()
+    if len(name) < 2:
+        return []
+    role = description.split('"', 1)[0].strip().lower()
+    from backend.agents.observation.snapshot_parser import parse_snapshot
+
+    nodes = parse_snapshot(snapshot_yaml)
+    exact = [n.ref for n in nodes if n.ref and (n.name or "") == name and (not role or n.role == role)]
+    if exact:
+        return exact
+    by_name = [n.ref for n in nodes if n.ref and (n.name or "") == name]
+    return by_name if len(by_name) == 1 else []
+
 
 class BrowserToolAdapter:
     def __init__(self, connection: MCPConnection, *, execution_id: str, action_timeout_s: float,
@@ -185,6 +208,24 @@ class BrowserToolAdapter:
             except BrowserError as exc:
                 response = ToolResponse(tool=tool, ok=False, error=str(exc),
                                         failure_category=FailureCategory.UNKNOWN_FAILURE)
+            if (not response.ok and response.failure_category == FailureCategory.STALE_ELEMENT_REFERENCE
+                    and any(arguments.get(key) for key, _desc in _TARGET_KEYS)):
+                remapped = await self._remap_stale_arguments(arguments)
+                if remapped is not None:
+                    log.info("retrying action with a fresh element ref", tool=tool,
+                             probe=probe.name if probe else None,
+                             element=str(arguments.get("element") or "")[:140])
+                    try:
+                        raw = await self.connection.call(tool, remapped, timeout=self._timeout_for(rule))
+                        response = parse_tool_result(tool, raw)
+                    except TimeoutError:
+                        response = ToolResponse(tool=tool, ok=False, error=f"{tool} timed out",
+                                                failure_category=FailureCategory.ACTION_TIMEOUT)
+                    except BrowserDisconnected:
+                        raise
+                    except BrowserError as exc:
+                        response = ToolResponse(tool=tool, ok=False, error=str(exc),
+                                                failure_category=FailureCategory.UNKNOWN_FAILURE)
             response.latency_ms = (time.perf_counter() - started) * 1000
             _scrub_echoed_values(response, secret_values)
             sp.set_attribute("ok", response.ok)
@@ -211,8 +252,34 @@ class BrowserToolAdapter:
             if result is not None:
                 await result
         if not response.ok:
-            log.info("tool call failed", tool=tool, category=record["failure_category"], error=record["error"])
+            log.info("tool call failed", tool=tool, probe=probe.name if probe else None,
+                     target=str(arguments.get("target") or arguments.get("startTarget") or "")[:80],
+                     element=str(arguments.get("element") or arguments.get("startElement") or "")[:140],
+                     category=record["failure_category"], error=record["error"], page_url=response.page_url)
         return response
+
+    async def _remap_stale_arguments(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        """The page re-rendered and the ref from the previous snapshot is gone. Take a new snapshot
+        and continue the same action against the element with the same accessible name."""
+
+        present = [(key, str(arguments.get(desc) or "")) for key, desc in _TARGET_KEYS if arguments.get(key)]
+        if not present:
+            return None
+        snap = await self.snapshot()
+        if not snap.ok or not snap.snapshot_yaml:
+            log.info("could not refresh the page snapshot after a stale ref", error=snap.error, url=snap.page_url)
+            return None
+        updated = dict(arguments)
+        for key, description in present:
+            refs = _refs_for_description(snap.snapshot_yaml, description)
+            if len(refs) != 1:
+                log.info("stale ref could not be tied to one element", element=description[:160],
+                         matches=len(refs), old_target=str(arguments.get(key))[:40], url=snap.page_url)
+                return None
+            log.info("mapped stale ref to the current element", element=description[:160],
+                     old_target=str(arguments.get(key))[:40], new_target=refs[0], url=snap.page_url)
+            updated[key] = refs[0]
+        return updated
 
     # ---------------------------------------------------------------- typed helpers
     async def navigate(self, url: str) -> ToolResponse:

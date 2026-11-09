@@ -26,3 +26,4 @@ reports/local/
 .DS_Store
 frontend/next-env.d.ts.bak
 frontend/tsconfig.tsbuildinfo
+Quintiles/*

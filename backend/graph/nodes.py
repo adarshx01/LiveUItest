@@ -369,7 +369,9 @@ async def _evaluate_condition(runtime: ExecutionRuntime, step: Step) -> tuple[bo
         from backend.browser.js_probes import VISIBLE_TEXT
 
         text = (await runtime.session.adapter.probe(VISIBLE_TEXT) or {}).get("text", "")  # type: ignore[union-attr]
-        result = contains_text(text, cond.expected or "")
+        control_text = " ".join(filter(None, [*(e.value_preview or "" for e in obs.elements),
+                                              *(opt for e in obs.elements for opt in e.selected_options)]))
+        result = contains_text(f"{text}\n{control_text}", cond.expected or "")
     else:
         probe = Step(id=f"{step.id}_cond", index=step.index, original_text=cond.description, action=ActionType.ASSERT,
                      target=cond.target)
@@ -659,12 +661,18 @@ async def fail_step(state: TestExecutionState, config: RunnableConfig | None = N
                                             root_cause=context.get("root_cause", ""), evidence=evidence,
                                             failed_strategies=work.failed_strategies, attempts=work.recovery_cycles)
     remaining = [sid for sid in (state.get("queue") or [])]
-    if (status == StepStatus.FAILED and step.action == ActionType.ASSERT and remaining
-            and runtime.settings.continue_on_failure == "assertions" and runtime.session is not None):
-        # a failed check changed nothing in the application: the following steps are still valid, so keep
-        # executing them (the test outcome stays FAILED); a failed *action* stops its dependents below
+    hard_stop = category in (FailureCategory.CAPTCHA_DETECTED.value, FailureCategory.BROWSER_DISCONNECTED.value,
+                             FailureCategory.UNEXPECTED_NAVIGATION.value)
+    left_allowed_site = bool(work.policy and any("outside the allowed domains" in r for r in work.policy.reasons))
+    # One failed or uncertain step must not abandon the rest of the test. The outcome stays FAILED,
+    # and each later step still runs so the report shows what it could and could not do.
+    if (remaining and runtime.session is not None and runtime.settings.continue_on_failure == "assertions"
+            and not hard_stop and not left_allowed_site and state.get("phase") != "rejected"):
+        log.info("step did not pass; continuing with the next step", step=step.index, status=status.value,
+                 category=category, message=message[:200], remaining=len(remaining),
+                 next_step=runtime.step(remaining[0]).index if remaining[0] in runtime.steps_by_id else None)
         await event_bus.publish(runtime.execution_id, "EXECUTION_CONTINUES",
-                                f"step {step.index} check failed; continuing with independent steps",
+                                f"step {step.index} did not pass; continuing with the next step",
                                 step_id=step.id)
         return {"phase": "step_failed_continue", "step_results": _results_dict(runtime),
                 "failure_context": None, "recovery_attempts": 0}

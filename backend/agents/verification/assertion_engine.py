@@ -165,7 +165,8 @@ class AssertionEngine:
             if el is None or conf < 0.62:
                 return AssertionResult(**base, actual=None, status="FAILED", message="control not found", evidence=ev)
             want = t != AssertionType.CHECKBOX_UNCHECKED
-            return done(bool(el.checked) == want, "checked" if el.checked else "unchecked", el.display())
+            on = bool(el.checked) or bool(el.selected)
+            return done(on == want, "checked" if on else "unchecked", el.display())
         if t == AssertionType.DROPDOWN_SELECTED:
             el, conf = self._find(spec.target, obs, step, "select")
             if el is None:
@@ -173,8 +174,7 @@ class AssertionEngine:
             # read the live control: refs captured before a postback/re-render are stale, and for an input-based
             # combobox the accessible *name* is its label, not its value
             actual = await self._live_selection(el)
-            ok = any(similarity(str(expected), a or "") >= 0.95 or (a or "").strip().lower() == str(expected).lower()
-                     for a in actual)
+            ok = any(_choice_matches(str(expected), a) for a in actual)
             return done(ok, actual, el.display())
         if t == AssertionType.INPUT_VALUE_EQUALS:
             el, conf = self._find(spec.target, obs, step, "fill")
@@ -188,8 +188,17 @@ class AssertionEngine:
             if state.get("sensitive"):
                 return AssertionResult(**base, actual="••••••", status="INCONCLUSIVE",
                                        message="password fields are not read back", evidence=ev)
-            ok = (actual or "") == str(expected) if spec.match == "exact" else contains_text(actual or "", str(expected))
-            return done(ok, actual, el.display(), [Evidence(source="dom_probe", detail={"element": el.display()})])
+            # a native select's value attribute is often a code; the visible choice is the option label
+            labels = list(el.selected_options)
+            if el.role == "combobox" or el.tag == "select":
+                labels = await self._live_selection(el) or labels
+            shown = [actual, *labels]
+            if spec.match == "exact" and el.role != "combobox" and el.tag != "select":
+                ok = (actual or "") == str(expected)
+            else:
+                ok = any(_choice_matches(str(expected), item) for item in shown)
+            return done(ok, actual if actual not in (None, "") else shown, el.display(),
+                        [Evidence(source="dom_probe", detail={"element": el.display()})])
         if t == AssertionType.ELEMENT_COUNT:
             count, what = _count(spec.target, obs)
             ok = count == int(expected)
@@ -211,14 +220,18 @@ class AssertionEngine:
             el, conf = self._find(spec.target, obs, None, "hover")
             # a heading names a section, it does not contain it: headings scope to the page
             if el is not None and conf >= 0.55 and el.role != "heading":
-                scope_text = " ".join(filter(None, [el.name, el.text, el.value_preview]))
+                scope_text = " ".join(filter(None, [el.name, el.text, el.value_preview, *el.selected_options]))
                 scope_display = el.display()
-        if scope_text is None:
+        control_text = " ".join(filter(None, [*(e.value_preview or "" for e in obs.elements),
+                                              *(opt for e in obs.elements for opt in e.selected_options)]))
+        if scope_text is None or (expected and not contains_text(scope_text, expected, mode="case_insensitive")):
             probe = await self.adapter.probe(VISIBLE_TEXT) or {}
             page_text = probe.get("text") or ""
-            # iframe content is not part of the main document's innerText; add snapshot text
+            # iframe content is not part of the main document's innerText; selected options and input
+            # values are not in innerText either (native <select> shows Percentage / Yen / 202409 there)
             frame_text = " ".join(f"{e.name} {e.text}" for e in obs.elements if e.context.frame)
-            scope_text = f"{page_text}\n{frame_text}\n" + " ".join(obs.visible_text)
+            scope_text = f"{scope_text or ''}\n{page_text}\n{frame_text}\n{' '.join(obs.visible_text)}\n{control_text}"
+            scope_display = None
         mode = spec.match if spec.match != "semantic" else "semantic"
         found = contains_text(scope_text, expected, mode=mode) if expected else False
         snippet = _snippet(scope_text, expected) if found else None
@@ -283,6 +296,20 @@ class AssertionEngine:
             result.evidence.append(Evidence(source="llm_semantic_judgement",
                                             detail={"satisfied": out.satisfied, "quote_verified": quote in text}))
         return result
+
+
+def _choice_matches(expected: str, actual: str | None) -> bool:
+    """A dropdown shows its option label. A truncated expectation is the start of that label."""
+
+    got = (actual or "").strip()
+    want = expected.strip()
+    if not got or not want:
+        return False
+    if got.lower() == want.lower() or similarity(want, got) >= 0.95:
+        return True
+    if len(want) >= 12 and got.lower().startswith(want.lower()):
+        return True
+    return False
 
 
 def _url_equals(actual: str, expected: str) -> bool:

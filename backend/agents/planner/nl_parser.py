@@ -157,7 +157,8 @@ class StepParser:
 
     def _parse_line(self, line: str, raw_line: str, ctx: ParseContext) -> ParsedLine:
         # phrasings that contain "and" but describe ONE interaction run before compound splitting
-        for rule in (self._rule_click_and_select, self._rule_time_fields, self._rule_check_on_tab):
+        for rule in (self._rule_click_and_select, self._rule_time_fields, self._rule_check_on_tab,
+                     self._rule_range_cell, self._rule_verify_else):
             result = rule(line, ctx)
             if result is not None:
                 return result
@@ -257,6 +258,14 @@ class StepParser:
                      line, re.IGNORECASE)
         if not m:
             return None
+        # "Percentage is displayed in the Range Type field in the Vertical Axis section" is a value
+        # check on a control that is already on screen. Treating the section as a page to open clicks
+        # the wrong element and then blocks every later step.
+        if re.search(r"\b(?:field|dropdown|combobox|textbox|input)\b", line, re.IGNORECASE):
+            return None
+        if m.group("kind").lower() in ("section", "panel") and m.group("state").lower() in (
+                "displayed", "shown", "visible", "present"):
+            return None
         where, kind = strip_quotes(m.group("where")).strip(), m.group("kind").lower()
         claim = m.group("claim").strip()
         steps: list[Step] = []
@@ -325,6 +334,78 @@ class StepParser:
                           * condition[1], condition=condition[0], then_steps=then_parsed.steps,
                           else_steps=else_parsed.steps)
         return ParsedLine([step], step.confidence, "inline conditional")
+
+    def _rule_range_cell(self, line: str, ctx: ParseContext) -> ParsedLine | None:
+        """A Range (%) grid is two rows. The letter or number is the column header; the value goes in the box under it.
+
+        "second row input field under column H" and "input field below 01" are that lower box.
+        "input field 1 ... enter 01 below the Horizontal dropdown" is the header box itself (it currently
+        shows 1, and the next steps refer to it as 01).
+        """
+
+        quoted = r"(?:\"[^\"]*\"|'[^']*'|\{\{\s*\w+\s*\}\})"
+        ordinals = r"first|second|third|fourth|fifth|last|final|1st|2nd|3rd|4th|5th"
+        under_col = re.match(
+            rf"^(?:click|tap)\s+on\s+the\s+(?P<ord>{ordinals})\s+row\s+input\s+field\s+under\s+column\s+"
+            rf"(?P<col>{quoted})\s+and\s+enter\s+(?P<val>{quoted})\s*$", line, re.IGNORECASE)
+        if under_col:
+            return self._grid_fill(ctx, line, column=strip_quotes(under_col.group("col")),
+                                   value_text=under_col.group("val"), hint="column_row",
+                                   row=ORDINALS[under_col.group("ord").lower()])
+        below = re.match(
+            rf"^(?:click|tap)\s+on\s+the\s+input\s+field\s+below\s+(?P<col>{quoted})\s+and\s+enter\s+"
+            rf"(?P<val>{quoted})\s*$", line, re.IGNORECASE)
+        if below:
+            return self._grid_fill(ctx, line, column=strip_quotes(below.group("col")),
+                                   value_text=below.group("val"), hint="below_label")
+        rename = re.match(
+            rf"^(?:click|tap)\s+on\s+the\s+input\s+field\s+(?P<col>{quoted})\s*,\s*clear\s+the\s+existing\s+"
+            rf"value\s*,\s*and\s+enter\s+(?P<val>{quoted})\s+below\s+(?P<ctx>.+?)\s*$", line, re.IGNORECASE)
+        if rename:
+            where = rename.group("ctx").strip()
+            named = QUOTE_RE.search(where)
+            context = strip_quotes(named.group(0)) if named else where
+            return self._grid_fill(ctx, line, column=strip_quotes(rename.group("col")),
+                                   value_text=rename.group("val"), hint="labeled_below", context=context)
+        return None
+
+    def _grid_fill(self, ctx: ParseContext, line: str, *, column: str, value_text: str, hint: str,
+                   row: int | None = None, context: str | None = None) -> ParsedLine:
+        value = parse_value(value_text, ctx)
+        target = TargetSpec(
+            intent=f"range input {column}",
+            exact_name=column,
+            preferred_roles=["textbox", "spinbutton"],
+            element_kind="input field",
+            context_hint=context,
+            ordinal=row,
+            position_hint=hint,
+            semantic_hints=[column, "range"],
+        )
+        step = self._step(ctx, line, ActionType.FILL, 0.93, target=target, value=value, risk_hint="input",
+                          notes=[f"grid:{hint}"])
+        return ParsedLine([step], 0.93, "range grid cell")
+
+    def _rule_verify_else(self, line: str, ctx: ParseContext) -> ParsedLine | None:
+        """\"Verify that X else do Y\" runs Y only when X is not already true."""
+
+        m = re.match(r"^(?P<check>(?:verify|validate|ensure|confirm|assert|observe|check)\s+.+?)\s+"
+                     r"else\s+(?P<fallback>.+)$", line, re.IGNORECASE)
+        if not m:
+            return None
+        checked = self._rule_assert(m.group("check").strip(), ctx)
+        if checked is None or not checked.steps or checked.steps[0].assertion is None:
+            return None
+        expected = checked.steps[0].assertion.expected
+        if expected is None:
+            return None
+        fallback = self.parse(m.group("fallback").strip(), ctx)
+        if not fallback.steps:
+            return None
+        cond = ConditionSpec(kind="text_visible", expected=str(expected), description=m.group("check").strip())
+        step = self._step(ctx, line, ActionType.CONDITIONAL, 0.86, condition=cond, then_steps=[],
+                          else_steps=fallback.steps)
+        return ParsedLine([step], 0.86, "verify else recover")
 
     def _rule_login_macro(self, line: str, ctx: ParseContext) -> ParsedLine | None:
         m = re.match(
@@ -1211,6 +1292,12 @@ def parse_assertion(cond: str, ctx: ParseContext) -> tuple[AssertionSpec | None,
     def a(type_: AssertionType, confidence: float, **kw: Any) -> tuple[AssertionSpec, float]:
         return AssertionSpec(type=type_, description=text, **kw), confidence
 
+    # "Verify that the page is displayed" names no destination. It must not become
+    # "URL contains 'the'" / "heading 'the' visible".
+    if re.fullmatch(r"(?:the\s+)?(?:page|screen)\s+(?:is\s+)?(?:fully\s+)?"
+                    r"(?:loaded|loads|displayed|rendered|shown|visible|opened|opens)", low):
+        return a(AssertionType.PAGE_LOADED, 0.95)
+
     # derived identity expectation: "the dashboard displays the logged-in user's name"
     if re.search(r"(logged[- ]in|current|signed[- ]in)\s+user'?s?\s+(?:user)?name|user'?s\s+(?:user)?name|"
                  r"name of the (?:logged[- ]in )?user|welcome message with (?:the )?(?:user'?s )?name", low):
@@ -1229,6 +1316,8 @@ def parse_assertion(cond: str, ctx: ParseContext) -> tuple[AssertionSpec | None,
                      r"loaded|is\s+displayed|appears?|is\s+shown|is\s+visible)$", low):
         page = (m.group("page") if m else re.match(r"^(?:the\s+)?(?P<page>[\w\s]+?)\s+(?:page|screen)", low).group("page"))  # type: ignore[union-attr]
         page = page.strip()
+        if page.lower() in {"the", "a", "an", "this", "that", "page", "screen", "it"}:
+            return a(AssertionType.PAGE_LOADED, 0.95)
         if URL_RE.match(page) or page.startswith("/"):
             return a(AssertionType.URL_CONTAINS, 0.95, expected=page)
         slug = re.sub(r"\s+", "-", page)
@@ -1254,8 +1343,6 @@ def parse_assertion(cond: str, ctx: ParseContext) -> tuple[AssertionSpec | None,
     if m:
         return a(AssertionType.PAGE_TITLE_CONTAINS, 0.95, expected=strip_quotes(text[m.start("v"):]),
                  match="case_insensitive")
-    if re.match(r"^(?:the\s+)?page\s+(?:is\s+)?(?:fully\s+)?(?:loaded|loads|displayed|rendered)$", low):
-        return a(AssertionType.PAGE_LOADED, 0.95)
     if re.match(r"^(?:the\s+)?(?:file\s+)?(?:download|file)\s+(?:starts|started|begins|is\s+downloaded|is\s+saved|"
                 r"completes)", low) or re.match(r"^(?:a\s+)?file\s+(?:is\s+)?downloaded", low):
         return a(AssertionType.DOWNLOAD_STARTED, 0.92)
@@ -1288,9 +1375,14 @@ def parse_assertion(cond: str, ctx: ParseContext) -> tuple[AssertionSpec | None,
                  target=TargetSpec(intent=what, preferred_roles=["row", "listitem", "article", "option"]))
     m = re.match(r"^(?:the\s+)?(?P<target>.+?)\s+(?:checkbox|check box|toggle|switch)?\s*(?:is|should be)\s+"
                  r"(?P<neg>not\s+|un)?(?:checked|ticked|selected|enabled|on)$", low)
-    if m and re.search(r"(checkbox|check box|toggle|switch|remember|agree|terms|subscribe|newsletter|option)", low):
+    if m and re.search(r"(checkbox|check box|toggle|switch|radio|remember|agree|terms|subscribe|newsletter|option)", low):
         negate = bool(m.group("neg"))
         target = build_target(text[: m.end("target")], "check")
+        if re.search(r"\bradio\b", low):
+            # "the radio button X is selected" asks whether that radio is on, not whether a dropdown
+            # option named "selected" is chosen.
+            target.preferred_roles = ["radio"]
+            return a(AssertionType.CHECKBOX_UNCHECKED if negate else AssertionType.RADIO_SELECTED, 0.9, target=target)
         target.preferred_roles = target.preferred_roles or ["checkbox", "switch", "radio"]
         return a(AssertionType.CHECKBOX_UNCHECKED if negate else AssertionType.CHECKBOX_CHECKED, 0.9, target=target)
     m = re.match(r"^(?:the\s+)?(?P<target>.+?)\s+(?:button|link|field|input|control)?\s*(?:is|should be)\s+"
@@ -1306,6 +1398,13 @@ def parse_assertion(cond: str, ctx: ParseContext) -> tuple[AssertionSpec | None,
     if m:
         return a(AssertionType.DROPDOWN_SELECTED, 0.9, expected=strip_quotes(m.group("opt")),
                  target=build_target(m.group("target"), "select"))
+    # "Verify that \"Same Period Last Year\" is selected" names a radio, not a dropdown option called "selected".
+    m = re.match(r"^(?:the\s+)?(?P<name>.+?)\s+is\s+selected$", text, re.IGNORECASE)
+    if m and not re.search(r"\b(dropdown|combobox|list|menu|field)\b", low):
+        name = strip_quotes(m.group("name"))
+        target = TargetSpec(intent=name, exact_name=name, preferred_roles=["radio", "checkbox", "switch"],
+                            element_kind="radio")
+        return a(AssertionType.RADIO_SELECTED, 0.9, target=target)
     m = re.match(r"^(?:the\s+)?(?P<target>.+?)\s+(?:dropdown|select|combobox|field)?\s*(?:shows|has|is set to|displays|"
                  r"has the value|value is|contains the value|equals|is)\s+(?P<v>\"[^\"]+\"|'[^']+'|\{\{\s*\w+\s*\}\}|.+)$",
                  text, re.IGNORECASE)
@@ -1342,6 +1441,19 @@ def parse_assertion(cond: str, ctx: ParseContext) -> tuple[AssertionSpec | None,
     if m:
         subject = strip_quotes(m.group("subj") or m.group("subj2") or m.group("subj3"))
         return text_or_element_assertion(subject, negate=True, description=text)
+    shown_in_field = re.match(
+        r"^(?:the\s+)?(?:truncated\s+text\s+|value\s+|text\s+)?(?P<value>\"[^\"]+\"|'[^']+'|.+?)\s+"
+        r"(?:is|are)\s+displayed\s+in\s+"
+        r"(?:the\s+)?(?P<field>.+?)\s+(?:field|dropdown|combobox|textbox|input|box)"
+        r"(?:\s+in\s+(?:the\s+)?(?P<section>.+?))?"
+        r"(?:\s+under\s+(?:the\s+)?(?P<under>.+?))?(?:\s+as\s+.+)?$", text, re.IGNORECASE)
+    if shown_in_field:
+        target = build_target(f"{strip_quotes(shown_in_field.group('field'))} field", "select")
+        section = shown_in_field.group("section") or shown_in_field.group("under")
+        if section:
+            target.context_hint = section.strip()
+        return a(AssertionType.TEXT_VISIBLE, 0.9, expected=strip_quotes(shown_in_field.group("value")),
+                 target=target, match="case_insensitive")
     m = re.match(r"^(?P<subj>.+?)\s+(?:is|are)\s+(?:now\s+)?(?:displayed|visible|shown|present|rendered|on\s+the\s+page|"
                  r"on\s+screen|seen)(?:\s+(?:on|in)\s+(?:the\s+)?(?P<where>.+))?$|^(?P<subj2>.+?)\s+(?:appears|appear|"
                  r"shows\s+up|is\s+shown)(?:\s+(?:on|in)\s+(?:the\s+)?(?P<where2>.+))?$", text, re.IGNORECASE)
@@ -1369,14 +1481,24 @@ def parse_assertion(cond: str, ctx: ParseContext) -> tuple[AssertionSpec | None,
 
 def text_or_element_assertion(subject: str, *, negate: bool, description: str,
                               where: str | None = None) -> tuple[AssertionSpec, float]:
+    # "the checkbox \"HP\" is displayed" names a control. Searching the page for the words
+    # "checkbox HP" fails even when that checkbox is on screen.
+    named = re.match(r"^(?:the\s+|a\s+|an\s+)?(?P<kind>checkbox|check\s*box|radio(?:\s+button)?|button|link|"
+                     r"dropdown|combobox|switch|toggle|tab)\s+(?P<name>.+)$", subject.strip(), re.IGNORECASE)
+    if named and not where:
+        target = build_target(subject, "hover")
+        t = AssertionType.ELEMENT_NOT_VISIBLE if negate else AssertionType.ELEMENT_VISIBLE
+        return AssertionSpec(type=t, description=description, target=target), 0.9
     kinds = list(KIND_NOUN_RE.finditer(subject))
     clean = DETERMINERS_RE.sub("", subject.strip())
     if kinds and kinds[-1].end() >= len(subject.rstrip()) - 1 and kinds[-1].group(1).lower() not in ("text", "message"):
         target = build_target(subject, "hover")
         t = AssertionType.ELEMENT_NOT_VISIBLE if negate else AssertionType.ELEMENT_VISIBLE
         return AssertionSpec(type=t, description=description, target=target), 0.88
-    expected = strip_quotes(clean)
-    expected = re.sub(r"^(?:text|message|heading|label)\s+", "", expected, flags=re.IGNORECASE)
+    quoted_in_subject = [next(g for g in m.groups() if g is not None) for m in QUOTE_RE.finditer(subject)]
+    expected = quoted_in_subject[0] if quoted_in_subject else strip_quotes(clean)
+    expected = re.sub(r"^(?:the\s+)?(?:value|text|message|heading|label|truncated\s+text)\s+", "", expected,
+                      flags=re.IGNORECASE)
     qualifier = re.match(r"^(?P<q>.+?)\s+(?:message|text|notification|toast|banner|label|greeting)$", expected,
                          re.IGNORECASE)
     if qualifier and not QUOTE_RE.search(subject):

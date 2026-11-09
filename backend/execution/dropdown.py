@@ -75,6 +75,7 @@ class DropdownDriver:
         state = await self.native_state(target, description)
         if state is None:
             return None
+        log.info("choosing dropdown option", control=description[:120], option=wanted[:80], kind="native")
         notes: list[str] = ["native select: options chosen with select_option (the OS-rendered popup is never "
                             "clicked)"]
         deadline = asyncio.get_running_loop().time() + NATIVE_POLL_S
@@ -145,6 +146,8 @@ class DropdownDriver:
             return ActionOutcome(False, error="dropdown trigger is not addressable",
                                  failure_category=FailureCategory.ELEMENT_NOT_FOUND,
                                  expected={"selected_option": wanted})
+        log.info("choosing dropdown option", control=trigger.display()[:120], option=wanted[:80], kind="custom",
+                 ref=target)
         path = [p.strip() for p in wanted.split(">")] if ">" in wanted else [wanted]
         if len(path) > 1:
             return await self._menu_path(trigger, target, path)
