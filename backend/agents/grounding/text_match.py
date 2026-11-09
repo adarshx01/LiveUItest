@@ -72,12 +72,7 @@ def contains_text(haystack: str, needle: str, *, mode: str = "case_insensitive")
     if mode in ("case_insensitive", "contains"):
         return n in h
     if mode == "semantic":
-        tokens = [t for t in token_set(n)]
-        if not tokens:
-            return n in h
-        htokens = token_set(h)
-        hits = sum(1 for t in tokens if t in htokens or any(ht.startswith(t[:5]) for ht in htokens if len(t) >= 5))
-        return hits / len(tokens) >= 0.75
+        return n in h or phrase_near(h, n)
     if mode == "regex":
         return re.search(str(needle), haystack) is not None
     return n in h
@@ -90,3 +85,82 @@ def split_identifier(text: str | None) -> str:
         return ""
     text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
     return normalize_text(re.sub(r"[_\-.#\[\]=\"']+", " ", text))
+
+
+_DIGIT_RE = re.compile(r"\d")
+# words a paraphrase adds or drops without changing what it says ("has been placed" / "was placed")
+_FILLER = STOPWORDS | frozenset("a an the is are was were be been being has have had will shall would should can could "
+                                "may might must do does did of to for in on at by with and or now just your my our their "
+                                "this that these those it its here there".split())
+
+
+def phrase_near(haystack: str, needle: str, *, threshold: float = 0.84) -> bool:
+    """A paraphrase-tolerant match that still means "this sentence is on the page".
+
+    The words of the expectation must appear together, in order, in one place: a run of page words about as long
+    as the expectation that reads like it (typos, plural/singular, a word added or dropped). Words scattered over
+    the page never add up to a match - dropdown options "2026/04 ... 2026/09" are not "Period: 2026/04 ～ 2026/09".
+    Every number, date or code in the expectation must be on the page in that same run, exactly.
+    """
+
+    want = normalize_text(needle).split()
+    words = normalize_text(haystack).split()
+    if not want or not words:
+        return False
+    must = [w for w in want if _DIGIT_RE.search(w)]
+    target = " ".join(want)
+    n = len(want)
+    lengths = (n, n + 1, n + 2)  # never shorter: the dropped word could be the one that matters (a name)
+    core = [w for w in want if w not in _FILLER or _DIGIT_RE.search(w)] or want
+    # only look where the page has a word that starts like one of the expected words (pages run to 20k words)
+    prefixes = {w[:3] for w in core}
+    starts: set[int] = set()
+    for i, word in enumerate(words):
+        if word[:3] in prefixes:
+            starts.update(range(max(0, i - n - 1), i + 1))
+    matcher = SequenceMatcher(autojunk=False)
+    matcher.set_seq2(target)
+    for start in sorted(starts):
+        for length in lengths:
+            window = words[start:start + length]
+            if len(window) < n:
+                break
+            if must and not all(m in window for m in must):
+                continue
+            matcher.set_seq1(" ".join(window))
+            if matcher.real_quick_ratio() >= threshold and matcher.quick_ratio() >= threshold and \
+                    matcher.ratio() >= threshold:
+                return True
+        # word by word, in order, close together: "order placed successfuly" ~ "order has been placed successfully"
+        if _word_like(words[start], core[0]) and _aligned(words[start:start + n + 3], core):
+            return True
+    return False
+
+
+def _word_like(page_word: str, wanted: str) -> bool:
+    if page_word == wanted:
+        return True
+    if _DIGIT_RE.search(wanted) or _DIGIT_RE.search(page_word):
+        return False  # numbers, dates and codes are exact
+    if _stem(page_word) == _stem(wanted):
+        return True
+    return len(wanted) >= 4 and SequenceMatcher(None, page_word, wanted).ratio() >= 0.82
+
+
+def _aligned(window: list[str], core: list[str]) -> bool:
+    """Each wanted word in order; the page words skipped between them may only be filler ("has been")."""
+
+    j, skipped = 0, 0
+    allowed = 0 if len(core) <= 3 else 1
+    for wanted in core:
+        while j < len(window) and not _word_like(window[j], wanted):
+            if j > 0 and window[j] not in _FILLER:
+                skipped += 1
+                if skipped > allowed:
+                    return False
+            j += 1
+        if j == len(window):
+            return False
+        j += 1
+    return True
+

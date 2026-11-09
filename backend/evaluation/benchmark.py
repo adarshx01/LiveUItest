@@ -158,6 +158,20 @@ def catalogue_scenarios() -> list[Scenario]:
                  ["care-login", "care-patient-102", "care-tab-logs"], ["care-patient-101"],
                  variables={"care_email": "care.user@example.com"}, secrets={"care_password": "CareDemo#2026"},
                  capability="a failed verification is reported and the run carries on (dependencies respected)"),
+        Scenario("WebForms registration: pairs, grid, legacy inputs, confirm", "registry_webforms.md", "PASSED",
+                 ["r-master-ym", "r-period-from", "r-period-to", "r-study-code", "r-quantity", "r-delivery",
+                  "r-range-head-1", "r-range-val-1", "r-range-val-3", "r-available", "r-move-right", "r-subtotal",
+                  "r-register"],
+                 ["r-move-left", "r-clear", "r-horizontal", "r-range-val-2", "r-range-head-3", "r-delivery-cal"],
+                 capability="from~to selects by ordinal, Range (%) cells by geometry, key-only and formatting inputs, "
+                            "list mover, colours, native confirm"),
+        Scenario("patient directory: unsubmitted search, spatial links, menus", "patient_directory.md", "PASSED",
+                 ["dir-search", "dir-patient-201", "dir-update-eligibility", "dir-add-doc", "dir-doc-pick",
+                  "dir-doc-name", "dir-save", "dir-more", "dir-upload-invoice", "dir-invoice-upload",
+                  "dir-invoice-save"],
+                 ["dir-patient-202", "dir-add-note", "dir-invoice-close", "dir-view-docs"],
+                 capability="search submitted on recovery, 'Add more' next to a heading, three dots menu, "
+                            "upload through links and buttons, wait for a preview"),
     ]
 
 

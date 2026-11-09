@@ -132,9 +132,12 @@ def relation_score(relation: str, candidate: BoundingBox, anchor: BoundingBox) -
         return 1.0 / (1.0 + max(0.0, gap) / 160.0)
     if relation in ("next_to", "near"):
         distance = edge_distance(candidate, anchor)
-        row_bonus = 1.15 if _v_overlap(candidate, anchor) > 0.25 else 1.0
-        reach = 180.0 if relation == "next_to" else 320.0
-        return min(1.0, row_bonus / (1.0 + distance / reach))
+        same_row = _v_overlap(candidate, anchor) > 0.25
+        if relation == "next_to":
+            # "next to" / "beside" is on the same line: the "Add more" of the section stacked 19px below
+            # ("Notes  Add more") is close, but it is under the heading, not next to it
+            return min(1.0, (1.15 if same_row else 0.6) / (1.0 + distance / 180.0))
+        return min(1.0, (1.15 if same_row else 1.0) / (1.0 + distance / 320.0))
     if relation == "inside":
         inside = (candidate.x >= anchor.x - 2 and candidate.y >= anchor.y - 2
                   and candidate.x + candidate.width <= anchor.x + anchor.width + 2

@@ -201,3 +201,87 @@ def test_no_search_submit_without_a_search_fill_and_model_hint_goes_first():
     work.model_hint = "needs_scroll"
     plan = runtime.plan_recovery(steps[0], _not_found())
     assert plan is not None and plan["strategy"] == "scroll_to_reveal"
+
+
+# --------------------------------------------------------------------------- found on the WebForms replica
+
+def _select(eid: str, label: str, x: float, y: float, options: list[str]) -> InventoryElement:
+    return _el(eid, "combobox", "", x, y, 80, label=label, label_inferred=True, tag="select", editable=True,
+               options=options)
+
+
+def test_named_dropdown_wins_over_others_offering_the_same_option():
+    months = [f"2026/{m:02d}" for m in range(1, 13)]
+    page = [_el("c1", "cell", "Master Year Month", 120, 94, 190), _select("ym", "Master Year Month", 316, 97, months),
+            _el("c2", "cell", "Data period", 120, 128, 190), _select("from", "Data period", 316, 131, months),
+            _el("sep", "generic", "～", 396, 131, 14), _select("to", "", 417, 131, months)]
+    assert _ground('Select "2026/11" from the "Master Year Month" dropdown', page) == "ym"
+    assert _ground('Select "2026/04" from the first "Data period" dropdown', page) == "from"
+    assert _ground('Select "2026/09" from the second "Data period" dropdown', page) == "to"
+    assert _ground('Select "2026/11"', page[:2]) == "ym"  # no name given: the option identifies the dropdown
+
+
+def test_symbol_buttons_are_told_apart():
+    page = [_el("right", "button", ">", 310, 479, 24, value_preview=">"), _el("left", "button", "<", 310, 506, 24),
+            _el("more", "button", "...", 500, 200, 24)]
+    assert _ground('Click on the ">" button', page) == "right"
+    assert _ground('Click on the "<" button', page) == "left"
+
+
+def test_semantic_text_needs_the_words_together_and_numbers_exact():
+    from backend.agents.grounding.text_match import contains_text
+
+    page = ("2026/01 2026/04 2026/09 Registration completed Period: 2026/09 ～ - Output columns Region Country "
+            "Show subtotal Columns: - Your order has been placed successfully. Welcome back, Alice Smith!")
+    assert not contains_text(page, "Period: 2026/04 ～ 2026/09", mode="semantic")
+    assert not contains_text(page, "Columns: Country (with subtotal)", mode="semantic")
+    assert not contains_text(page, "Welcome back, Bob", mode="semantic")
+    assert contains_text(page, "order placed successfuly", mode="semantic")
+    assert contains_text(page, "Your order was placed successfully", mode="semantic")
+
+
+def test_quoted_expectation_is_literal_text():
+    step = StepParser().parse('Verify that "Period: 2026/04 ～ 2026/09" is displayed', ParseContext()).steps[0]
+    assert step.assertion is not None and step.assertion.match == "case_insensitive"
+
+
+def test_parser_check_select_and_quoted_field_value_order():
+    parse = lambda line: StepParser().parse(line, ParseContext()).steps[0]  # noqa: E731
+    assert parse('Check "Show subtotal"').action.value == "check"
+    assert parse('Select "Country" in the "Available columns" list').action.value == "select"
+    assert parse('Select "resume.pdf" in the "Attachment" field').action.value == "upload"
+    step = parse('Enter "Document Name" as "Test Document".')
+    assert step.target.intent == "Document Name" and step.value.value == "Test Document"
+    step = parse('Enter "jane.doe@example.com" as "Email"')
+    assert step.target.intent == "Email" and step.value.value == "jane.doe@example.com"
+
+
+def test_next_to_means_the_same_line_not_the_section_stacked_below():
+    page = [_el("h_docs", "heading", "Upload Documents", 137, 447, 140, 19), _el("add_docs", "generic", "Add more", 291, 448, 65, 17,
+                                                                              clickable_hint=True),
+            _el("h_notes", "heading", "Notes", 137, 484, 43, 19), _el("add_notes", "generic", "Add more", 194, 485, 65, 17,
+                                                                     clickable_hint=True)]
+    assert _ground('Click on the "Add more" link next to "Upload Documents".', page) == "add_docs"
+    assert _ground('Click on the "Add more" link next to "Notes".', page) == "add_notes"
+
+
+def test_left_right_top_bottom_words_pick_by_screen_position():
+    months = [f"2026/{m:02d}" for m in range(1, 13)]
+    pair = [_el("c2", "cell", "Data period", 120, 128, 190), _select("from", "Data period", 316, 131, months),
+            _el("sep", "generic", "～", 396, 131, 14), _select("to", "", 417, 131, months)]
+    assert _ground('Select "2026/09" in the Data period dropdown on the right', pair) == "to"
+    assert _ground('Select "2026/04" in the left "Data period" dropdown', pair) == "from"
+    saves = [_el("s1", "button", "Save", 100, 80), _el("s2", "button", "Save", 100, 800)]
+    assert _ground("Click the bottom Save button", saves) == "s2"
+    assert _ground("Click the Save button at the top", saves) == "s1"
+    assert StepParser().parse("Click the Top Up button", ParseContext()).steps[0].target.position_hint is None
+
+
+def test_model_sees_how_each_control_is_rendered():
+    from backend.execution.runtime import rendering_kind
+
+    assert rendering_kind(_select("s", "Data period", 1, 1, ["2026/01"])) == "native-select"
+    assert rendering_kind(_el("d", "textbox", "Due", 1, 1, tag="input", input_type="date")) == "browser-picker"
+    assert rendering_kind(_el("f", "button", "Browse", 1, 1, tag="input", input_type="file")) == "file-chooser"
+    assert rendering_kind(_el("c", "combobox", "City", 1, 1, tag="div", haspopup="listbox")) == "custom-widget"
+    assert rendering_kind(_el("a", "generic", "Add more", 1, 1, tag="a", clickable_hint=True)) == "clickable-a"

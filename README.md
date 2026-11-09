@@ -108,7 +108,16 @@ API, two workers, the Playwright MCP browser worker (HTTP transport), the UI and
     on Theme Box and select Initial Call", "Click on Start Date Selection and select 09 June 2026",
     "Select Start Time and set the first field as 23 HH and second field as 15 MM", "Check whether new
     Interaction for patient Abc is added on the Interaction Logs tab") against the `/care` replica;
-  * `continue_after_failed_check.md` — a failed check is reported and the independent steps still run.
+  * `continue_after_failed_check.md` — a failed check is reported and the independent steps still run;
+  * `registry_webforms.md` — a WebForms-style form (`/registry/register`): "the first / second
+    "Data period" dropdown" of a from ～ to pair, Range (%) cells found by geometry ("the input field
+    below "01"", "the second row input field under column "3""), a key-driven field that rejects
+    programmatic fills, a thousands-formatting field, a typed `yyyy/mm/dd` date, a list mover with ">"
+    and a checkbox that only enables afterwards, colour checks, and a native `confirm()` on Register;
+  * `patient_directory.md` — a patient list that only searches on Enter (the click on the patient
+    recovers by submitting the search), "the "Add more" link next to "Upload Documents"" with a decoy
+    "Add more" under it, uploads through a link and a button that drive hidden file inputs, the three
+    dots menu, and "Wait for the preview to appear".
 * [`docs/sample-reports/`](docs/sample-reports/) — generated reports, refreshed by `demo_e2e.py`: a
   first run, the UI-change run (stale memory detected, re-grounded, recovery recorded), a failed
   broken-checkout run, a one-time-code run showing secrets masked in code, text and screenshots, and

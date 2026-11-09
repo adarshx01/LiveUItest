@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Study Registration - Trial Registry</title>
+<style>
+  body { margin:0; font-family: "MS PGothic", Meiryo, Arial, sans-serif; font-size:13px; background:#eef1f5; color:#222; }
+  .hdr { background:#2d4f7c; color:#fff; padding:8px 14px; font-weight:bold; }
+  .page { max-width:1040px; margin:14px auto; background:#fff; border:1px solid #b9c3d0; padding:14px 18px; }
+  h2 { font-size:15px; border-left:5px solid #2d4f7c; padding-left:8px; margin:6px 0 12px; }
+  table.frm { border-collapse:collapse; width:100%; margin-bottom:14px; }
+  table.frm td { border:1px solid #c7ced8; padding:5px 8px; }
+  table.frm td.lbl { background:#dfe6ef; width:170px; font-weight:bold; }
+  select, input[type=text] { font-size:13px; padding:2px 4px; border:1px solid #8c97a5; }
+  .sep { padding:0 6px; }
+  .grid { border-collapse:collapse; margin-bottom:14px; }
+  .grid th, .grid td { border:1px solid #c7ced8; padding:4px 6px; text-align:center; }
+  .grid th { background:#dfe6ef; }
+  .grid input { width:70px; text-align:right; }
+  .mover { display:flex; gap:10px; align-items:center; margin-bottom:14px; }
+  .mover select { width:180px; height:110px; }
+  .mover .btns { display:flex; flex-direction:column; gap:6px; }
+  .mover .btns button { width:40px; }
+  .status-ok { color:#138a4a; font-weight:bold; }
+  .status-ng { color:#d32222; font-weight:bold; }
+  .status-wait { color:#e08a00; font-weight:bold; }
+  .cal { position:absolute; background:#fff; border:1px solid #8c97a5; padding:6px; box-shadow:2px 2px 6px rgba(0,0,0,.2); z-index:5; }
+  .cal table td { padding:2px 5px; cursor:pointer; text-align:center; }
+  .cal table td:hover { background:#dfe6ef; }
+  .bar { margin-top:12px; }
+  .bar input[type=button] { padding:4px 16px; font-size:13px; }
+  .msg-ok { background:#e6f6ec; border:1px solid #9fd3b2; padding:8px; margin-top:10px; }
+  .msg-ng { background:#fde8e8; border:1px solid #e3a3a3; padding:8px; margin-top:10px; }
+  .err { color:#d32222; }
+</style>
+</head>
+<body>
+<div class="hdr">Trial Registry</div>
+<form id="aspnetForm" class="page" onsubmit="return false" autocomplete="off">
+  <h2>Study Registration</h2>
+  <table class="frm">
+    <tr><td class="lbl">Master Year Month</td>
+        <td><select id="ctl00_Main_ddlMasterYM" name="ctl00$Main$ddlMasterYM" data-gt="r-master-ym">
+              <option value="">--Select--</option>{% for m in months %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+            </select></td></tr>
+    <tr><td class="lbl">Data period</td>
+        <td><select id="ctl00_Main_ddlPeriodFrom" name="ctl00$Main$ddlPeriodFrom" data-gt="r-period-from">
+              <option value="">--</option>{% for m in months %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+            </select><span class="sep">～</span><select id="ctl00_Main_ddlPeriodTo" name="ctl00$Main$ddlPeriodTo" data-gt="r-period-to">
+              <option value="">--</option>{% for m in months %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+            </select></td></tr>
+    <tr><td class="lbl">Study Code</td>
+        <td><input type="text" id="ctl00_Main_txtStudyCode" name="ctl00$Main$txtStudyCode" maxlength="12" data-gt="r-study-code">
+            <span class="muted">(keyed entry only)</span></td></tr>
+    <tr><td class="lbl">Quantity</td>
+        <td><input type="text" id="ctl00_Main_txtQuantity" name="ctl00$Main$txtQuantity" inputmode="numeric" data-gt="r-quantity"></td></tr>
+    <tr><td class="lbl">Delivery Date</td>
+        <td style="position:relative"><input type="text" id="ctl00_Main_txtDelivery" name="ctl00$Main$txtDelivery" placeholder="yyyy/mm/dd" maxlength="10" data-gt="r-delivery">
+            <input type="button" id="ctl00_Main_btnCal" value="..." title="Calendar" data-gt="r-delivery-cal">
+            <span id="deliveryErr" class="err"></span>
+            <div id="calendar" class="cal" style="display:none"></div></td></tr>
+  </table>
+
+  <h2>Range (%)</h2>
+  <table class="frm" style="width:auto"><tr><td class="lbl">Horizontal</td>
+    <td><select id="ctl00_Main_ddlHorizontal" data-gt="r-horizontal"><option>Percent</option><option>Count</option></select></td></tr></table>
+  <table class="grid" id="ctl00_Main_gvRange">
+    <tr>{% for c in range_cols %}<td><input type="text" id="ctl00_Main_gvRange_txtHead{{ loop.index }}" value="{{ loop.index }}" data-gt="r-range-head-{{ loop.index }}"></td>{% endfor %}</tr>
+    <tr>{% for c in range_cols %}<td><input type="text" class="num3" id="ctl00_Main_gvRange_txtVal{{ loop.index }}" data-gt="r-range-val-{{ loop.index }}"></td>{% endfor %}</tr>
+  </table>
+
+  <h2>Output columns</h2>
+  <div class="mover">
+    <select id="ctl00_Main_lstAvailable" multiple aria-label="Available columns" data-gt="r-available">
+      {% for c in columns %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+    </select>
+    <div class="btns">
+      <input type="button" id="ctl00_Main_btnMoveRight" value="&gt;" title="Move to selected" data-gt="r-move-right">
+      <input type="button" id="ctl00_Main_btnMoveLeft" value="&lt;" title="Move to available" data-gt="r-move-left">
+    </div>
+    <select id="ctl00_Main_lstSelected" multiple aria-label="Selected columns" data-gt="r-selected"></select>
+    <label><input type="checkbox" id="ctl00_Main_chkSubtotal" disabled data-gt="r-subtotal"> Show subtotal</label>
+  </div>
+
+  <h2>Recent registrations</h2>
+  <table class="frm" style="width:auto">
+    <tr><td class="lbl">STU-0007</td><td class="status-ok">Approved</td></tr>
+    <tr><td class="lbl">STU-0008</td><td class="status-ng">Rejected</td></tr>
+    <tr><td class="lbl">STU-0009</td><td class="status-wait">Pending</td></tr>
+  </table>
+
+  <div class="bar">
+    <input type="button" id="ctl00_Main_btnRegister" value="Register" data-gt="r-register">
+    <input type="button" id="ctl00_Main_btnClear" value="Clear" data-gt="r-clear">
+  </div>
+  <div id="result" role="status"></div>
+</form>
+<script>
+  (function () {
+    function report(type, target) {
+      try {
+        var el = target && target.closest ? target.closest('[data-gt]') : null;
+        var payload = JSON.stringify({type: type, gt: el ? el.getAttribute('data-gt') : null, tag: target && target.tagName,
+          path: location.pathname, value: target && target.value ? String(target.value).slice(0, 40) : null});
+        navigator.sendBeacon('/__events', new Blob([payload], {type: 'application/json'}));
+      } catch (e) {}
+    }
+    document.addEventListener('click', function (e) { report('click', e.target); }, true);
+    document.addEventListener('change', function (e) { report('change', e.target); }, true);
+    document.addEventListener('input', function (e) { report('input', e.target); }, true);
+  })();
+
+  function $(id) { return document.getElementById('ctl00_Main_' + id); }
+
+  // Study Code: an old key-driven widget. It keeps its own buffer, updated from key presses; a value
+  // written straight into the box (no key events) is reverted, as many legacy masked inputs do.
+  (function () {
+    var box = $('txtStudyCode'), buffer = '', keyed = false;
+    box.addEventListener('keydown', function () { keyed = true; });
+    box.addEventListener('input', function () {
+      if (!keyed && box.value !== '') { box.value = buffer; return; }
+      buffer = box.value.toUpperCase(); box.value = buffer; keyed = false;
+    });
+  })();
+
+  // Quantity: digits only, shown with thousands separators while typing
+  $('txtQuantity').addEventListener('input', function () {
+    var digits = this.value.replace(/[^0-9]/g, '');
+    this.value = digits ? Number(digits).toLocaleString('en-US') : '';
+  });
+
+  // Range values: three decimals once the box is left
+  document.querySelectorAll('.num3').forEach(function (box) {
+    box.addEventListener('blur', function () {
+      var n = parseFloat(box.value.replace(/,/g, ''));
+      if (!isNaN(n)) { box.value = n.toFixed(3); }
+    });
+  });
+
+  // Delivery Date: typed as yyyy/mm/dd, or picked from the little calendar
+  (function () {
+    var box = $('txtDelivery'), cal = document.getElementById('calendar'), err = document.getElementById('deliveryErr');
+    function valid(v) { return /^\d{4}\/\d{2}\/\d{2}$/.test(v) && !isNaN(Date.parse(v.replace(/\//g, '-'))); }
+    box.addEventListener('blur', function () { err.textContent = box.value && !valid(box.value) ? 'Invalid date' : ''; });
+    $('btnCal').addEventListener('click', function () {
+      var now = new Date(2026, 11, 1), html = '<div><b>2026/12</b></div><table><tr>';
+      for (var d = 1; d <= 31; d++) {
+        html += '<td data-day="' + d + '">' + d + '</td>' + (d % 7 === 0 ? '</tr><tr>' : '');
+      }
+      cal.innerHTML = html + '</tr></table>';
+      cal.style.display = 'block';
+      cal.querySelectorAll('td').forEach(function (td) {
+        td.addEventListener('click', function () {
+          var day = ('0' + td.getAttribute('data-day')).slice(-2);
+          box.value = '2026/12/' + day; err.textContent = ''; cal.style.display = 'none';
+        });
+      });
+      void now;
+    });
+  })();
+
+  // Column mover: the subtotal option only makes sense once a column is selected
+  (function () {
+    var from = $('lstAvailable'), to = $('lstSelected'), chk = $('chkSubtotal');
+    function move(a, b) {
+      Array.prototype.slice.call(a.selectedOptions).forEach(function (o) { o.selected = false; b.appendChild(o); });
+      chk.disabled = to.options.length === 0;
+      if (chk.disabled) { chk.checked = false; }
+    }
+    $('btnMoveRight').addEventListener('click', function () { move(from, to); });
+    $('btnMoveLeft').addEventListener('click', function () { move(to, from); });
+  })();
+
+  $('btnRegister').addEventListener('click', function () {
+    var result = document.getElementById('result');
+    if (!window.confirm('Do you want to register?')) {
+      result.className = 'msg-ng'; result.textContent = 'Registration cancelled'; return;
+    }
+    var vals = [];
+    document.querySelectorAll('.num3').forEach(function (box, i) {
+      var head = $('gvRange_txtHead' + (i + 1)).value;
+      if (box.value) { vals.push(head + '=' + box.value); }
+    });
+    var cols = Array.prototype.map.call($('lstSelected').options, function (o) { return o.value; });
+    var lines = [
+      'Registration completed',
+      'Master Year Month: ' + ($('ddlMasterYM').value || '-'),
+      'Period: ' + ($('ddlPeriodFrom').value || '-') + ' ～ ' + ($('ddlPeriodTo').value || '-'),
+      'Study Code: ' + ($('txtStudyCode').value || '-'),
+      'Quantity: ' + ($('txtQuantity').value || '-'),
+      'Delivery: ' + ($('txtDelivery').value || '-'),
+      'Range: ' + (vals.join(', ') || '-'),
+      'Columns: ' + (cols.join(', ') || '-') + ($('chkSubtotal').checked ? ' (with subtotal)' : '')
+    ];
+    result.className = 'msg-ok';
+    result.innerHTML = lines.map(function (l) { var d = document.createElement('div'); d.textContent = l; return d.outerHTML; }).join('');
+  });
+  $('btnClear').addEventListener('click', function () { location.reload(); });
+</script>
+</body>
+</html>

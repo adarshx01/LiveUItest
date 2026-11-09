@@ -1,0 +1,196 @@
+{% extends "care/base.html" %}
+{% block title %}Patient Directory · CareLink{% endblock %}
+{% block head %}
+<style>
+  .searchbar { display:flex; gap:6px; align-items:center; }
+  .iconbtn { width:38px; height:38px; border:1px solid #c5cfd8; border-radius:4px; background:#fff; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; }
+  .iconbtn svg { width:18px; height:18px; fill:none; stroke:#344; stroke-width:2; }
+  tr.sel td { background:#e8f4f8; }
+  .kebab { position:relative; }
+  .kebab .menu { position:absolute; right:0; top:34px; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,.12); min-width:170px; z-index:5; }
+  .kebab .menu a { display:block; padding:9px 12px; color:var(--ink); text-decoration:none; font-size:14px; }
+  .kebab .menu a:hover { background:#f0f4f7; }
+  .section-head { display:flex; align-items:center; gap:14px; margin:18px 0 8px; }
+  .section-head h4 { margin:0; font-size:15px; }
+  .link { color:var(--brand); cursor:pointer; text-decoration:underline; font-size:14px; }
+  .uprow { display:flex; gap:12px; align-items:center; padding:8px; border:1px dashed #c5cfd8; border-radius:6px; margin-bottom:8px; }
+  .modal-back { position:fixed; inset:0; background:rgba(15,30,45,.45); display:flex; align-items:center; justify-content:center; z-index:20; }
+  .modal { background:#fff; border-radius:8px; width:460px; padding:20px; }
+  .preview { margin-top:12px; padding:10px; border:1px solid var(--line); border-radius:6px; background:#f8fafb; }
+  .hidden { display:none !important; }
+</style>
+{% endblock %}
+{% block content %}
+<h2>Patient Support Program</h2>
+<div class="panel">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <strong>Patients</strong>
+    <div class="searchbar">
+      <input id="patientSearch" class="input" style="width:260px" placeholder="Search patients" aria-label="Search patients" data-gt="dir-search" autocomplete="off">
+      <button type="button" id="searchGo" class="iconbtn" title="Search" data-gt="dir-search-go"><svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="M15 15l6 6"/></svg></button>
+    </div>
+  </div>
+  <p id="hint" class="muted">Type a name and press Enter to search.</p>
+  <table id="patientTable" class="hidden">
+    <thead><tr><th>Patient</th><th>Patient ID</th><th>Program</th><th>Status</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+
+<div id="detail" class="panel hidden">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h3 id="detailName" style="margin:0"></h3>
+    <span>
+      <button type="button" class="btn" id="updateEligibility" data-gt="dir-update-eligibility">Update Eligibility</button>
+      <span class="kebab">
+        <button type="button" class="iconbtn" aria-label="More options" title="More options" id="moreBtn" data-gt="dir-more">&#8942;</button>
+        <div class="menu hidden" id="moreMenu" role="menu">
+          <a role="menuitem" href="#" id="viewDocs" data-gt="dir-view-docs">View Documents</a>
+          <a role="menuitem" href="#" id="uploadInvoice" data-gt="dir-upload-invoice">Upload Invoice</a>
+        </div>
+      </span>
+    </span>
+  </div>
+  <p class="muted" id="detailMeta"></p>
+
+  <div id="eligibility" class="hidden">
+    <div class="section-head"><h4>Upload Documents</h4><a class="link" id="addDoc" data-gt="dir-add-doc">Add more</a></div>
+    <div id="docRows"></div>
+    <div class="section-head"><h4>Notes</h4><a class="link" id="addNote" data-gt="dir-add-note">Add more</a></div>
+    <div id="noteRows"></div>
+    <button type="button" class="btn" id="saveEligibility" data-gt="dir-save">Save</button>
+    <p id="saved" role="status" class="muted"></p>
+  </div>
+  <table id="docTable" class="hidden" style="margin-top:12px">
+    <thead><tr><th>Document Name</th><th>File</th></tr></thead><tbody id="docList"></tbody>
+  </table>
+</div>
+
+<div id="invoiceModal" class="modal-back hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="invTitle">
+    <h3 id="invTitle" style="margin-top:0">Upload Invoice</h3>
+    <input type="file" id="invoiceFile" class="hidden" data-gt="dir-invoice-file">
+    <button type="button" class="btn ghost" id="invoicePick" data-gt="dir-invoice-upload">Upload</button>
+    <div id="invoicePreview" class="preview hidden" role="region" aria-label="Preview"></div>
+    <div style="margin-top:14px;text-align:right">
+      <button type="button" class="btn ghost" id="invoiceClose" data-gt="dir-invoice-close">Close</button>
+      <button type="button" class="btn" id="invoiceSave" data-gt="dir-invoice-save">Save</button>
+    </div>
+  </div>
+</div>
+<p id="invoiceStatus" role="status" class="muted"></p>
+{% endblock %}
+{% block scripts %}
+<script>
+  (function () {
+    var PATIENTS = {{ patients|tojson }};
+    var search = document.getElementById('patientSearch');
+    var rows = document.getElementById('rows');
+    var table = document.getElementById('patientTable');
+    var hint = document.getElementById('hint');
+    var current = null;
+
+    // the list is only fetched when the search is submitted (Enter or the magnifier), never on typing
+    function runSearch() {
+      var q = search.value.trim().toLowerCase();
+      hint.textContent = 'Searching…';
+      table.classList.add('hidden');
+      setTimeout(function () {
+        rows.innerHTML = '';
+        var found = PATIENTS.filter(function (p) { return !q || p.name.toLowerCase().indexOf(q) >= 0; });
+        found.forEach(function (p) {
+          var tr = document.createElement('tr');
+          tr.innerHTML = '<td><a href="#" data-gt="dir-patient-' + p.id + '">' + p.name + '</a></td><td>' + p.code +
+                         '</td><td>' + p.program + '</td><td>' + p.status + '</td><td></td>';
+          tr.querySelector('a').addEventListener('click', function (e) { e.preventDefault(); open(p, tr); });
+          rows.appendChild(tr);
+        });
+        hint.textContent = found.length ? found.length + ' patient(s) found' : 'No patients match "' + search.value + '"';
+        table.classList.toggle('hidden', !found.length);
+      }, 600);
+    }
+    search.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); runSearch(); } });
+    document.getElementById('searchGo').addEventListener('click', runSearch);
+
+    function open(p, tr) {
+      current = p;
+      Array.prototype.forEach.call(rows.children, function (r) { r.classList.remove('sel'); });
+      tr.classList.add('sel');
+      document.getElementById('detail').classList.remove('hidden');
+      document.getElementById('detailName').textContent = p.name;
+      document.getElementById('detailMeta').textContent = 'Selected patient: ' + p.name + ' · ' + p.code;
+    }
+
+    document.getElementById('updateEligibility').addEventListener('click', function () {
+      document.getElementById('eligibility').classList.remove('hidden');
+    });
+
+    var docSeq = 0;
+    document.getElementById('addDoc').addEventListener('click', function () {
+      docSeq += 1;
+      var row = document.createElement('div');
+      row.className = 'uprow';
+      row.innerHTML = '<input type="file" class="hidden" id="docFile' + docSeq + '" data-gt="dir-doc-file">' +
+        '<a class="link" data-gt="dir-doc-pick">Upload File(s)</a><span class="muted fname">No file chosen</span>' +
+        '<input class="input" style="width:220px" placeholder="Document Name" aria-label="Document Name" data-gt="dir-doc-name">';
+      var file = row.querySelector('input[type=file]');
+      row.querySelector('a').addEventListener('click', function () { file.click(); });
+      file.addEventListener('change', function () {
+        row.querySelector('.fname').textContent = Array.prototype.map.call(file.files, function (f) { return f.name; }).join(', ');
+      });
+      document.getElementById('docRows').appendChild(row);
+    });
+    document.getElementById('addNote').addEventListener('click', function () {
+      var row = document.createElement('div');
+      row.className = 'uprow';
+      row.innerHTML = '<textarea class="input" style="height:60px" placeholder="Note" aria-label="Note" data-gt="dir-note"></textarea>';
+      document.getElementById('noteRows').appendChild(row);
+    });
+    document.getElementById('saveEligibility').addEventListener('click', function () {
+      var list = document.getElementById('docList');
+      var saved = 0;
+      document.querySelectorAll('#docRows .uprow').forEach(function (row) {
+        var file = row.querySelector('input[type=file]');
+        var name = row.querySelector('input[aria-label="Document Name"]').value.trim();
+        if (!file.files.length || !name) { return; }
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td></td><td></td>';
+        tr.children[0].textContent = name;
+        tr.children[1].textContent = file.files[0].name;
+        list.appendChild(tr);
+        saved += 1;
+      });
+      document.getElementById('docRows').innerHTML = '';
+      document.getElementById('docTable').classList.toggle('hidden', !list.children.length);
+      document.getElementById('saved').textContent = saved ? 'Eligibility saved with ' + saved + ' document(s)' :
+        'Nothing to save: add a file and a document name';
+    });
+
+    var more = document.getElementById('moreMenu');
+    document.getElementById('moreBtn').addEventListener('click', function (e) { e.stopPropagation(); more.classList.toggle('hidden'); });
+    document.addEventListener('click', function () { more.classList.add('hidden'); });
+    var modal = document.getElementById('invoiceModal');
+    var preview = document.getElementById('invoicePreview');
+    var invoice = document.getElementById('invoiceFile');
+    document.getElementById('uploadInvoice').addEventListener('click', function (e) {
+      e.preventDefault(); more.classList.add('hidden'); modal.classList.remove('hidden');
+    });
+    document.getElementById('invoicePick').addEventListener('click', function () { invoice.click(); });
+    invoice.addEventListener('change', function () {
+      if (!invoice.files.length) { return; }
+      var name = invoice.files[0].name;
+      setTimeout(function () {  // the preview renders a moment after the upload
+        preview.textContent = 'Preview: ' + name;
+        preview.classList.remove('hidden');
+      }, 1200);
+    });
+    document.getElementById('invoiceClose').addEventListener('click', function () { modal.classList.add('hidden'); });
+    document.getElementById('invoiceSave').addEventListener('click', function () {
+      var ready = !preview.classList.contains('hidden');
+      modal.classList.add('hidden');
+      document.getElementById('invoiceStatus').textContent = ready ? 'Invoice saved for ' + (current ? current.name : '') :
+        'Invoice not saved: no preview';
+    });
+  })();
+</script>
+{% endblock %}

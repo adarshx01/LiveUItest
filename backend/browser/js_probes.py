@@ -728,9 +728,21 @@ def scroll_into_view_probe() -> Probe:
                  "Math.round(r.width), Math.round(r.height)]}; }", element=True, mutates_view=True)
 
 
+# every file input on the page (hidden ones included: "Upload" buttons and "Upload File(s)" links usually drive a
+# hidden <input type=file>), with the names of the files it holds - never their content
+FILE_INPUTS = Probe("file_inputs", r"""() => {
+""" + _DEEP_JS + r"""
+  return deepElements(document.body, 20000).filter(el => el.tagName === 'INPUT' && el.type === 'file').map(el => ({
+    id: el.id || null, name: el.name || null, multiple: !!el.multiple,
+    files: el.files ? Array.from(el.files).map(f => f.name) : [],
+    dialog: !!el.closest('[role=dialog],[aria-modal=true],dialog')
+  }));
+}""")
+
 STATIC_PROBES: dict[str, Probe] = {p.name: p for p in (DOM_INVENTORY, PAGE_SIGNALS, VISIBLE_TEXT, PAGE_INFO,
                                                         ELEMENT_STATE, VALUE_FINGERPRINT, SCROLL_INFO,
                                                         MASK_SENSITIVE_FIELD, SELECT_STATE, INPUT_STATE,
-                                                        POPUP_OPTIONS, SCROLL_LIST, CALENDAR_STATE, TIME_FIELDS)}
+                                                        POPUP_OPTIONS, SCROLL_LIST, CALENDAR_STATE, TIME_FIELDS,
+                                                        FILE_INPUTS)}
 PROBE_NAMES = set(STATIC_PROBES) | {"find_text", "element_at_point", "scroll_by", "scroll_edge", "scroll_into_view",
                                     "set_input_value", "find_thing", "text_colors"}

@@ -491,6 +491,32 @@ async def care_patient(request: Request, patient_id: int) -> Response:
     return care_render("patient.html", request, patient=patient, logs=STATE.care_logs.get(patient_id, []))
 
 
+DIRECTORY = [
+    {"id": 201, "name": "Thomas Kutty", "code": "PSP-00201", "program": "Patient Support Program", "status": "Active"},
+    {"id": 202, "name": "Thomas Mathew", "code": "PSP-00202", "program": "Patient Support Program", "status": "Active"},
+    {"id": 203, "name": "Anna Kutty", "code": "PSP-00203", "program": "Patient Support Program", "status": "On hold"},
+    {"id": 204, "name": "Priya Nair", "code": "PSP-00204", "program": "Copay Assistance", "status": "Active"},
+]
+
+
+@app.get("/care/directory", response_class=HTMLResponse)
+async def care_directory(request: Request) -> Response:
+    """A patient list that is only fetched when the search is submitted (Enter / the magnifier)."""
+
+    return care_render("directory.html", request, patients=DIRECTORY)
+
+
+@app.get("/registry/register", response_class=HTMLResponse)
+async def registry_register(request: Request) -> Response:
+    """A WebForms-style registration form: from~to select pairs, a Range (%) grid, key-driven and formatting
+    inputs, a column mover, coloured statuses and a native confirm on Register."""
+
+    months = [f"2026/{m:02d}" for m in range(1, 13)]
+    html = TEMPLATES.get_template("registry/register.html").render(
+        months=months, range_cols=list(range(5)), columns=["Region", "Site", "Country", "Investigator", "Visit"])
+    return HTMLResponse(html)
+
+
 @app.post("/care/api/patients/{patient_id}/interactions")
 async def care_record(request: Request, patient_id: int) -> JSONResponse:
     import datetime as dt

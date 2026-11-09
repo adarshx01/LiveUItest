@@ -127,6 +127,16 @@ def name_score(target: TargetSpec, el: InventoryElement) -> tuple[float, str]:
     best, why = 0.0, ""
     if target.exact_name:
         visible_name = (el.name or el.text or "").strip()
+        if not normalize_text(target.exact_name):
+            # a symbol-only name (">", "<", "+", "…", "?"): normalising would erase it and make every symbol
+            # button equal to every other. Compare the characters themselves.
+            shown = [t.strip() for t in (el.name, el.text, el.value_preview, el.title) if t and t.strip()]
+            want = re.sub(r"\s+", "", target.exact_name)
+            if any(re.sub(r"\s+", "", t) == want for t in shown):
+                return 1.0, f"shows the symbol '{target.exact_name}'"
+            if any(want in t and len(t) <= len(want) + 3 for t in shown):
+                return 0.8, f"shows '{target.exact_name}'"
+            return 0.0, ""
         if visible_name and normalize_text(visible_name) == normalize_text(target.exact_name):
             return 1.0, f"name equals '{target.exact_name}'"
     best_pair = ("", "")
@@ -650,6 +660,13 @@ class ElementGrounder:
                     if c.element.context.landmark in ("banner", "navigation", "contentinfo") and not target.context_hint:
                         c.features["context"] = max(0.0, c.features["context"] - 0.3)
                         c.evidence.append("header/footer control while a main-content match exists")
+        if has_name_target and any(c.features.get("name", 0) >= 0.85 for c in scored):
+            # "Select 2026/11 from the Master Year Month dropdown": every month select offers 2026/11. Offering the
+            # option corroborates the named dropdown; it does not make another dropdown the named one.
+            for c in scored:
+                if c.features.get("name", 0) < 0.5 and c.features.get("option") is not None:
+                    c.features["identity"] = round(min(c.features["identity"], 0.4 + 0.2 * c.features.get("name", 0)), 4)
+                    c.evidence.append("offers the option, but another dropdown carries the named label")
         best_identity = max((c.features["identity"] for c in scored), default=0.0)
         for c in scored:
             if c.memory_quality > 0 and c.features["identity"] < best_identity - 0.15:
@@ -682,9 +699,10 @@ class ElementGrounder:
             tier = [c for c in scored if c.raw >= top.raw - 0.08]
             if positional:
                 tier = [c for c in scored if c.features.get("context", 0) > 0.15 and c.raw >= top.raw - 0.25]
-            if target.ordinal is not None and not positional:
-                # a from ~ to pair, or a row of controls sharing one label ("the second Data period dropdown"):
-                # controls of the same kind on the top match's row belong to the same group
+            if (target.ordinal is not None or target.position_hint in SIDE_HINTS) and not positional:
+                # a from ~ to pair, or a row of controls sharing one label ("the second Data period dropdown",
+                # "the Data period dropdown on the right"): controls of the same kind on the top match's row
+                # belong to the same group
                 for c in scored:
                     unnamed = not (c.element.name or "").strip() or bool(SEPARATOR_NAME_RE.fullmatch(c.element.name.strip()))
                     if c not in tier and c.element.role == top.element.role and same_row(c.element, top.element) \
@@ -781,6 +799,9 @@ class ElementGrounder:
         if confidence >= t.refine:
             return "refine"
         return "ask_human"
+
+
+SIDE_HINTS = {"left", "right", "top", "bottom", "top left", "top right", "bottom left", "bottom right"}
 
 
 def _apply_position(tier: list[ScoredCandidate], hint: str, viewport: tuple[int, int]) -> list[ScoredCandidate]:

@@ -15,6 +15,7 @@ from backend.agents.grounding.locator_strategy import LocatorStrategy, resolve_s
 from backend.agents.grounding.text_match import similarity
 from backend.browser.js_probes import (
     ELEMENT_STATE,
+    FILE_INPUTS,
     SELECT_STATE,
     VALUE_FINGERPRINT,
     fnv1a,
@@ -45,6 +46,12 @@ def page_changed(before: Observation | None, after: Observation | None) -> tuple
     if before is None or after is None:
         return True, ["no baseline"]
     reasons: list[str] = []
+    if after.modal_state and not before.modal_state:
+        # a native alert / confirm / file chooser blocks the page: url, tabs and elements read empty until it is
+        # answered, which is not a navigation
+        message = (getattr(after.modal_state, "message", None) or "").strip()
+        reasons.append(f"native {after.modal_state.kind} opened" + (f": '{message[:80]}'" if message else ""))
+        return True, reasons
     if before.url != after.url:
         reasons.append(f"url {before.url} -> {after.url}")
     if (before.fingerprint and after.fingerprint and before.fingerprint.structure_hash !=
@@ -237,6 +244,12 @@ class ActionVerifier:
                 files = state.get("files") or []
             want = expected.get("files") or []
             ok = bool(want) and all(f in files for f in want)
+            if not ok and want:
+                # the step named a button / link that opens the chooser; the file lands in a (hidden) file input
+                inputs = await self.adapter.probe(FILE_INPUTS) or []
+                held = [f for item in inputs if isinstance(item, dict) for f in item.get("files") or []]
+                if all(f in held for f in want):
+                    ok, files = True, held
             checks.append({"check": "files_attached", "ok": ok, "detail": files})
             return result("verified" if ok else "failed", "file attached" if ok else "file not attached",
                           None if ok else FailureCategory.VERIFICATION_FAILED)

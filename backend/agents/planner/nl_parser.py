@@ -507,8 +507,9 @@ class StepParser:
             verb = line.split()[0].lower()
             cond = m.group("cond")
             if verb == "check" and not re.match(r"^check\s+(that|if|whether)\b", line, re.IGNORECASE):
-                if not STATE_VERBS_RE.search(cond) or re.search(r"\b(checkbox|check box|tick box|toggle|switch)\b",
-                                                               cond, re.IGNORECASE):
+                bare = QUOTE_RE.sub(" ", cond)  # "Check "Show subtotal"": the quoted label's words are not a claim
+                if not STATE_VERBS_RE.search(bare) or re.search(r"\b(checkbox|check box|tick box|toggle|switch)\b",
+                                                               bare, re.IGNORECASE):
                     return None  # "Check the remember me checkbox" -> CHECK action
             if verb == "confirm" and re.match(r"^confirm\s+(?:the\s+)?(?:alert|dialog|popup|prompt|order|"
                                               r"purchase|payment|booking)\b", line, re.IGNORECASE):
@@ -756,6 +757,9 @@ class StepParser:
                      r"for)\s+(?:the\s+)?(?P<target>.+))?$", line, re.IGNORECASE)
         if not m:
             return None
+        if line.split()[0].lower() in ("select", "choose") and not _looks_like_file(m.group("file")) and not re.search(
+                r"\b(upload|file|attach(?:ment)?|browse|document)s?\b", m.group("target") or "", re.IGNORECASE):
+            return None  # 'Select "Country" in the "Available columns" list' picks a list entry, not a file
         file_value = parse_value(m.group("file"), ctx)
         target = build_target(m.group("target") or "file upload", "upload")
         if not target.purpose:
@@ -917,7 +921,9 @@ class StepParser:
         if m:
             target_phrase, value_phrase = m.group("target"), m.group("value")
             verb = line.split()[0].lower()
-            if " as " in f" {line.lower()} " and _looks_like_data(target_phrase) and looks_like_field(value_phrase):
+            both_quoted = bool(QUOTE_RE.fullmatch(target_phrase.strip()) and QUOTE_RE.fullmatch(value_phrase.strip().rstrip(".")))
+            if " as " in f" {line.lower()} " and _looks_like_data(target_phrase) and looks_like_field(value_phrase) and (
+                    not both_quoted or _looks_like_data(strip_quotes(target_phrase))):
                 # "Enterjane.doe@example.com as Email", "Enter S3cret!pass as Password": value first, field last
                 target_phrase, value_phrase = value_phrase, target_phrase
             if verb == "set" and looks_like_choice(target_phrase) and not is_explicit_value(value_phrase):
@@ -1147,6 +1153,16 @@ COLOR_NAME_RE = (r"(?:light\s+|dark\s+|pale\s+|bright\s+|sky\s+|navy\s+|royal\s+
                  r"magenta|teal|maroon|navy|olive|lime|gold|silver|beige|turquoise|indigo|crimson|amber)")
 
 
+def _looks_like_file(text: str) -> bool:
+    """'resume.pdf', "C:\\docs\\a.jpg", {{ invoice_file }} - a file to upload, not a list entry like "Country"."""
+
+    bare = strip_quotes(text).strip()
+    return bool(re.match(r"^\{\{\s*\w+\s*\}\}$", bare)  # a vaulted / test-data file name
+                or re.search(r"\.[A-Za-z][A-Za-z0-9]{0,4}$", bare)  # report.pdf, photo.jpeg
+                or re.match(r"^(?:[A-Za-z]:[\\/]|\\\\|\.{1,2}[\\/]|~[\\/]|/)", bare)  # C:\..., \\share, ./x, ~/x, /x
+                or "\\" in bare)  # 2026/11 is a month, not a path
+
+
 def grid_target(column: str, hint: str, row: int | None = None) -> TargetSpec:
     """The input cell of a header-and-values grid (Range (%)): resolved by geometry, not by its name."""
 
@@ -1346,6 +1362,14 @@ def build_target(phrase: str | None, action: str) -> TargetSpec:
         work = work[: pos_m.start()]
 
     work = DETERMINERS_RE.sub("", work.strip())
+    # "the right Data period dropdown", "the bottom Save button", "the left-most edit icon", "the upper Search box"
+    side_m = re.match(r"^(?P<side>top|bottom|upper|lower|left|right|middle|centre|center|top-?most|bottom-?most|"
+                      r"left-?most|right-?most|uppermost|lowermost|far\s+left|far\s+right)\s+(?!up\b|click\b|side\b)"
+                      r"(?P<rest>\S.*)$", work, re.IGNORECASE)
+    if side_m and position_hint is None:
+        side = re.sub(r"[\s-]*most$|^far\s+", "", side_m.group("side").lower())
+        position_hint = {"upper": "top", "lower": "bottom", "centre": "center"}.get(side, side)
+        work = side_m.group("rest")
     ordinal = None
     ord_m = re.match(r"^(?P<ord>first|second|third|fourth|fifth|last|final|1st|2nd|3rd|4th|5th)\s+", work, re.IGNORECASE)
     if ord_m:
@@ -1749,7 +1773,9 @@ def text_or_element_assertion(subject: str, *, negate: bool, description: str,
         expected = qualifier.group("q")
     t = AssertionType.TEXT_NOT_VISIBLE if negate else AssertionType.TEXT_VISIBLE
     target = build_target(where, "hover") if where else None
-    quoted_subject = bool(QUOTE_RE.search(subject))
+    # the author quoted the text: it is the literal text to find, never a bag of words to look for anywhere
+    quoted_in_line = {normalize_text(next(g for g in m.groups() if g is not None)) for m in QUOTE_RE.finditer(description)}
+    quoted_subject = bool(QUOTE_RE.search(subject)) or normalize_text(expected) in quoted_in_line
     match = "case_insensitive" if quoted_subject or len(expected.split()) <= 2 else "semantic"
     return AssertionSpec(type=t, description=description, expected=expected, target=target,
                          match=match), 0.88 if match != "semantic" else 0.8
