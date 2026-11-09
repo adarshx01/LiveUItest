@@ -37,6 +37,20 @@ class RunHandle:
     final: dict[str, Any] | None = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
     paused: asyncio.Event = field(default_factory=asyncio.Event)
+    step_count: int = 0
+
+
+def count_steps(spec: Any) -> int:
+    """Steps in a serialized test spec, branches of conditionals included."""
+
+    def walk(steps: Any) -> int:
+        total = 0
+        for item in steps or []:
+            if isinstance(item, dict):
+                total += 1 + walk(item.get("then_steps")) + walk(item.get("else_steps"))
+        return total
+
+    return walk(spec.get("steps")) if isinstance(spec, dict) else 0
 
 
 class ExecutionEngine:
@@ -57,8 +71,9 @@ class ExecutionEngine:
             await runtime.close()
         await self.handle.close()
 
-    def _config(self, execution_id: str) -> dict[str, Any]:
-        steps = get_settings().budget.max_steps
+    def _config(self, execution_id: str, step_count: int = 0) -> dict[str, Any]:
+        # every step passes through ~15 graph nodes, more with recovery: size the limit to the test
+        steps = max(get_settings().budget.max_steps, step_count + 50)
         return {"configurable": {"thread_id": execution_id}, "recursion_limit": 40 * steps + 200}
 
     def submit(self, state: dict[str, Any]) -> RunHandle:
@@ -78,12 +93,15 @@ class ExecutionEngine:
         execution_id = handle.execution_id
         token = bind_log_context(execution_id=execution_id)
         handle.paused.clear()
+        if isinstance(payload, dict) and payload.get("test_spec"):
+            handle.step_count = count_steps(payload["test_spec"])
         try:
             async with self._semaphore:
                 handle.status = "RUNNING"
                 await self._update_run(execution_id, status="RUNNING", started_at=_now() if not resume else None)
-                await self.graph.ainvoke(payload, self._config(execution_id))
-                snapshot = await self.graph.aget_state(self._config(execution_id))
+                config = self._config(execution_id, handle.step_count)
+                await self.graph.ainvoke(payload, config)
+                snapshot = await self.graph.aget_state(config)
                 interrupts = [i for task in snapshot.tasks for i in (task.interrupts or [])]
                 if interrupts:
                     value = interrupts[0].value

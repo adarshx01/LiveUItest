@@ -139,6 +139,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
 {% endfor %}
 {% if r.security_warnings %}<h2>Security warnings</h2><div class="card">{% for w in r.security_warnings %}<div>⚠ {{ w }}</div>{% endfor %}<div class="note">Page content is untrusted: instruction-like text was recorded and ignored.</div></div>{% endif %}
 {% if r.plan_issues %}<h2>Plan analysis</h2><div class="card"><table><tr><th>Severity</th><th>Code</th><th>Message</th></tr>{% for i in r.plan_issues %}<tr><td>{{ i.severity }}</td><td>{{ i.code }}</td><td>{{ i.message }}</td></tr>{% endfor %}</table></div>{% endif %}
+{% if r.metrics.llm_calls %}<h2>Model usage</h2><div class="card"><table><tr><th>Agent</th><th>Calls</th><th>Failed</th><th>Input tokens</th><th>Cached</th><th>Output tokens</th><th>Reasoning</th><th>Cost</th><th>Latency</th></tr>{% for name, u in r.metrics.llm_usage_by_agent.items() %}<tr><td>{{ name }}</td><td>{{ u.calls|int }}</td><td>{{ u.failed|int }}</td><td>{{ "{:,}".format(u.input_tokens|int) }}</td><td>{{ "{:,}".format(u.cached_tokens|int) }}</td><td>{{ "{:,}".format(u.output_tokens|int) }}</td><td>{{ "{:,}".format(u.reasoning_tokens|int) }}</td><td>${{ "%.4f"|format(u.cost_usd) }}</td><td>{{ "%.1f"|format(u.latency_ms / 1000) }} s</td></tr>{% endfor %}<tr><th>Total</th><th>{{ r.metrics.llm_calls }}</th><th>{{ r.metrics.llm_failed_calls }}</th><th>{{ "{:,}".format(r.metrics.llm_input_tokens) }}</th><th>{{ "{:,}".format(r.metrics.llm_cached_tokens) }}</th><th>{{ "{:,}".format(r.metrics.llm_output_tokens) }}</th><th>{{ "{:,}".format(r.metrics.llm_reasoning_tokens) }}</th><th>${{ "%.4f"|format(r.metrics.llm_cost_usd) }}</th><th>{{ "%.1f"|format(r.metrics.model_latency_ms / 1000) }} s</th></tr></table><div class="note">{% for name, u in r.metrics.llm_usage_by_model.items() %}{{ name }}: {{ u.calls|int }} calls, {{ "{:,}".format((u.input_tokens + u.output_tokens)|int) }} tokens{% if not loop.last %} · {% endif %}{% endfor %}. Cost uses AITEST_LLM_PRICE_* (per million tokens).</div></div>{% endif %}
 <h2>Artifacts</h2><div class="card">{% for a in r.artifacts %}<div><span class="pill">{{ a.kind }}</span> <a href="{{ a.href }}">{{ a.name }}</a></div>{% endfor %}</div>
 <h2>Execution timeline</h2><div class="card"><table><tr><th>t (s)</th><th>Event</th><th>Step</th><th>Message</th></tr>{% for e in r.timeline %}<tr><td>{{ e.t }}</td><td><code>{{ e.event }}</code></td><td>{{ e.step_id or '' }}</td><td>{{ e.message }}</td></tr>{% endfor %}</table></div>
 <p class="note">Generated {{ r.generated }} by the AI testing platform. Secrets and sensitive values are redacted.</p>
@@ -288,6 +289,10 @@ class ReportGenerator:
             m.memory_fastpath = getattr(runtime, "memory_fastpath", 0)
             m.llm_calls, m.llm_input_tokens, m.llm_output_tokens = b.llm_calls, b.llm_input_tokens, b.llm_output_tokens
             m.llm_cost_usd = round(b.llm_cost_usd, 6)
+            m.llm_cached_tokens, m.llm_reasoning_tokens = b.llm_cached_tokens, b.llm_reasoning_tokens
+            m.llm_failed_calls = b.llm_failed_calls
+            m.llm_usage_by_agent = {k: dict(v) for k, v in sorted(b.llm_by_agent.items())}
+            m.llm_usage_by_model = {k: dict(v) for k, v in sorted(b.llm_by_model.items())}
             m.tool_calls = b.tool_calls
             m.model_latency_ms, m.tool_latency_ms = round(b.model_latency_ms, 1), round(b.tool_latency_ms, 1)
             m.duration_ms = round((time.time() - runtime.started) * 1000, 1)
@@ -347,7 +352,9 @@ class ReportGenerator:
             ("Retries", metrics.retries, "#1b2130"), ("Recoveries", metrics.recoveries, "#1b2130"),
             ("Memory reuse", f"{metrics.memory_hits}/{metrics.memory_lookups}", "#1b2130"),
             ("Direct replays", metrics.memory_fastpath, "#1b2130"),
-            ("LLM calls", metrics.llm_calls, "#1b2130"), ("Agent cost", f"${metrics.llm_cost_usd:.4f}", "#1b2130"),
+            ("LLM calls", metrics.llm_calls, "#1b2130"),
+            ("LLM tokens", f"{metrics.llm_input_tokens + metrics.llm_output_tokens:,}", "#1b2130"),
+            ("Agent cost", f"${metrics.llm_cost_usd:.4f}", "#1b2130"),
             ("Tool calls", metrics.tool_calls, "#1b2130"),
         ]
         artifacts = [{"kind": "report", "name": "report.json", "href": "report.json"}]

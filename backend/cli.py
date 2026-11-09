@@ -190,11 +190,34 @@ async def run_test(args: argparse.Namespace) -> int:
             flags = " (recovered)" if res.get("recovered") else ""
             flags += " (memory)" if res.get("memory_used") else ""
             print(f"   {res['index']:>2}. {res['status']:<12} {res['message'][:110]}{flags}")
+        _print_usage(report.get("local_path"))
         if report.get("local_path"):
             print(f"📄 report: {report['local_path']}")
         return 0 if final.get("outcome") == "PASSED" else 1
     finally:
         await platform.engine.stop()
+
+
+def _print_usage(report_path: str | None) -> None:
+    """Model usage of the run, from the JSON report written next to the HTML one."""
+
+    if not report_path:
+        return
+    try:
+        data = json.loads((Path(report_path).parent / "report.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    m = data.get("metrics") or {}
+    if not m.get("llm_calls"):
+        print("🧮 model: not used (deterministic run)")
+        return
+    print(f"🧮 model: {m['llm_calls']} calls ({m.get('llm_failed_calls', 0)} failed), "
+          f"{m.get('llm_input_tokens', 0):,} input ({m.get('llm_cached_tokens', 0):,} cached) + "
+          f"{m.get('llm_output_tokens', 0):,} output ({m.get('llm_reasoning_tokens', 0):,} reasoning) tokens, "
+          f"${m.get('llm_cost_usd', 0):.4f}, {m.get('model_latency_ms', 0) / 1000:.1f} s model time")
+    for agent, u in (m.get("llm_usage_by_agent") or {}).items():
+        print(f"     {agent:<28} {int(u['calls']):>4} calls  {int(u['input_tokens']):>9,} in  "
+              f"{int(u['output_tokens']):>8,} out  ${u['cost_usd']:.4f}")
 
 
 def main(argv: list[str] | None = None) -> int:

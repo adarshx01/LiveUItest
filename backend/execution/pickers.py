@@ -156,29 +156,34 @@ class PickerDriver:
             return self._fail("date field is not addressable", FailureCategory.ELEMENT_NOT_FOUND, expected, notes)
         typeable = el.tag in ("input", "textarea") and el.editable and not el.readonly
         fmt = date_format_of(el.placeholder)
-        if typeable and fmt:
-            text = wanted.strftime(fmt)
-            response = await self.adapter.type_text(target, el.display(), text)
-            await self.adapter.press_key("Escape")  # close a calendar that opened on focus
-            shown = await self._read(el)
-            if response.ok and value_matches("date", shown, iso, placeholder=el.placeholder):
-                notes.append(f"typed {text!r} in the field's own format ({el.placeholder})")
-                expected["confirmed"] = shown
-                return ActionOutcome(True, tool="browser_type", args={"target": target, "text": text},
-                                     expected=expected, notes=notes)
-            notes.append(f"typing {text!r} did not stick (field shows {shown!r}); using the calendar")
+        if typeable:
+            # what the tester wrote first ("2025/12/25" is usually the format the application expects), then the
+            # field's own placeholder format; the calendar only when typing does not stick
+            attempts = [original]
+            if fmt and wanted.strftime(fmt) != original:
+                attempts.append(wanted.strftime(fmt))
+            for text in attempts:
+                response = await self.adapter.type_text(target, el.display(), text)
+                await self.adapter.press_key("Escape")  # close a calendar that opened on focus
+                shown = await self._read(el)
+                if response.ok and not value_matches("date", shown, iso, placeholder=el.placeholder):
+                    await self.adapter.press_key("Tab")  # some fields only take the value when left
+                    shown = await self._read(el)
+                if response.ok and value_matches("date", shown, iso, placeholder=el.placeholder):
+                    notes.append(f"typed {text!r}" + (f" in the field's own format ({el.placeholder})"
+                                                      if text != original else ""))
+                    expected["confirmed"] = shown
+                    return ActionOutcome(True, tool="browser_type", args={"target": target, "text": text},
+                                         expected=expected, notes=notes)
+                notes.append(f"typing {text!r} did not stick (field shows {shown!r})")
+            notes.append("using the calendar")
 
         await self.adapter.click(target, el.display())
         cal = await self._probe_until(CALENDAR_STATE, target, lambda s: s.get("found"))
         if not cal.get("found"):
             if typeable:
-                response = await self.adapter.type_text(target, el.display(), original)
-                await self.adapter.press_key("Escape")
-                shown = await self._read(el)
-                if response.ok and value_matches("date", shown, iso, placeholder=el.placeholder):
-                    expected["confirmed"] = shown
-                    return ActionOutcome(True, tool="browser_type", args={"target": target, "text": original},
-                                         expected=expected, notes=notes + ["no calendar opened; typed the date"])
+                return self._fail(f"the date field does not keep {original!r} and opens no calendar",
+                                  FailureCategory.FORM_VALIDATION_FAILED, expected, notes)
             return None
         notes.append(f"calendar opened (showing {cal.get('header') or 'unknown month'})")
 

@@ -29,7 +29,7 @@ from pydantic import BaseModel, ValidationError
 
 from backend.agents.governance.redaction import redact_text, register_sensitive
 from backend.core.config import Settings, get_settings
-from backend.core.exceptions import AgentOutputInvalid, ModelError, ModelUnavailable
+from backend.core.exceptions import AgentOutputInvalid, BudgetExceeded, ModelError, ModelUnavailable
 from backend.core.logging import get_logger
 from backend.core.telemetry import span
 from backend.harness.budget_manager import current_tracker
@@ -59,6 +59,8 @@ class ModelUsage:
     output_tokens: int = 0
     latency_ms: float = 0.0
     cost_usd: float = 0.0
+    cached_input_tokens: int = 0  # prompt tokens served from the provider's cache (billed lower)
+    reasoning_tokens: int = 0  # hidden reasoning tokens, already included in output_tokens
 
 
 @dataclass
@@ -169,10 +171,13 @@ class AnthropicProvider:
         if parsed is None:
             raise AgentOutputInvalid("Model returned no parseable structured output", details={"model": model})
         usage = getattr(response, "usage", None)
-        in_tok = int(getattr(usage, "input_tokens", 0) or 0)
+        cached, reasoning = _token_details(usage)
+        # Anthropic reports cache reads separately from input_tokens: the prompt size is their sum
+        in_tok = int(getattr(usage, "input_tokens", 0) or 0) + cached
         out_tok = int(getattr(usage, "output_tokens", 0) or 0)
-        cost = (in_tok * self.settings.llm_price_input_per_mtok + out_tok * self.settings.llm_price_output_per_mtok) / 1e6
-        return parsed, ModelUsage(self.name, getattr(response, "model", model), in_tok, out_tok, latency, cost)
+        cost = _cost(self.settings, in_tok, out_tok, cached)
+        return parsed, ModelUsage(self.name, getattr(response, "model", model), in_tok, out_tok, latency, cost,
+                                  cached, reasoning)
 
 
 class OpenAICompatibleProvider:
@@ -218,8 +223,9 @@ class OpenAICompatibleProvider:
             raise AgentOutputInvalid("Model output failed schema validation", details={"error": str(exc)[:300]}) from exc
         usage = payload.get("usage") or {}
         in_tok, out_tok = int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
-        cost = (in_tok * self.settings.llm_price_input_per_mtok + out_tok * self.settings.llm_price_output_per_mtok) / 1e6
-        return parsed, ModelUsage(self.name, model, in_tok, out_tok, latency, cost)
+        cached, reasoning = _token_details(usage)
+        cost = _cost(self.settings, in_tok, out_tok, cached)
+        return parsed, ModelUsage(self.name, model, in_tok, out_tok, latency, cost, cached, reasoning)
 
 
 class AzureOpenAIProvider:
@@ -336,12 +342,12 @@ class AzureOpenAIProvider:
             raise ModelError(f"Azure OpenAI error ({exc.status_code})",
                              details={"provider": self.name, "deployment": model}) from exc
         latency = (time.perf_counter() - started) * 1000
-        in_tok, out_tok = usage
-        cost = (in_tok * self.settings.llm_price_input_per_mtok + out_tok * self.settings.llm_price_output_per_mtok) / 1e6
-        return parsed, ModelUsage(self.name, served or model, in_tok, out_tok, latency, cost)
+        in_tok, out_tok, cached, reasoning = usage
+        cost = _cost(self.settings, in_tok, out_tok, cached)
+        return parsed, ModelUsage(self.name, served or model, in_tok, out_tok, latency, cost, cached, reasoning)
 
     async def _responses(self, client: Any, model: str, system: str, text: str, images: list[ImageInput],
-                         output_model: type[T], max_tokens: int) -> tuple[T, tuple[int, int], str | None]:
+                         output_model: type[T], max_tokens: int) -> tuple[T, tuple[int, int, int, int], str | None]:
         content: list[dict[str, Any]] = [{"type": "input_text", "text": text}]
         for image in images:
             content.append({"type": "input_image", "image_url": _data_url(image)})
@@ -360,11 +366,11 @@ class AzureOpenAIProvider:
         if parsed is None:
             parsed = _validate_json(output_model, raw, _refusal_of(response))
         usage = getattr(response, "usage", None)
-        return parsed, (int(getattr(usage, "input_tokens", 0) or 0), int(getattr(usage, "output_tokens", 0) or 0)), \
-            getattr(response, "model", None)
+        return parsed, (int(getattr(usage, "input_tokens", 0) or 0), int(getattr(usage, "output_tokens", 0) or 0),
+                        *_token_details(usage)), getattr(response, "model", None)
 
     async def _chat(self, client: Any, model: str, system: str, text: str, images: list[ImageInput],
-                    output_model: type[T], max_tokens: int) -> tuple[T, tuple[int, int], str | None]:
+                    output_model: type[T], max_tokens: int) -> tuple[T, tuple[int, int, int, int], str | None]:
         user: list[dict[str, Any]] = [{"type": "text", "text": text}]
         for image in images:
             user.append({"type": "image_url", "image_url": {"url": _data_url(image)}})
@@ -382,7 +388,39 @@ class AzureOpenAIProvider:
         parsed = _validate_json(output_model, message.content, None)
         usage = getattr(response, "usage", None)
         return parsed, (int(getattr(usage, "prompt_tokens", 0) or 0),
-                        int(getattr(usage, "completion_tokens", 0) or 0)), getattr(response, "model", None)
+                        int(getattr(usage, "completion_tokens", 0) or 0), *_token_details(usage)), \
+            getattr(response, "model", None)
+
+
+def _token_details(usage: Any) -> tuple[int, int]:
+    """(cached input tokens, reasoning tokens) from any SDK's usage object; 0 when not reported."""
+
+    def num(obj: Any, *names: str) -> int:
+        for name in names:
+            value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+            if value:
+                return int(value)
+        return 0
+
+    if usage is None:
+        return 0, 0
+    cached = num(usage, "cache_read_input_tokens")  # Anthropic
+    for details in ("input_tokens_details", "prompt_tokens_details"):  # Responses API / Chat Completions
+        obj = usage.get(details) if isinstance(usage, dict) else getattr(usage, details, None)
+        if obj is not None:
+            cached = cached or num(obj, "cached_tokens")
+    reasoning = 0
+    for details in ("output_tokens_details", "completion_tokens_details"):
+        obj = usage.get(details) if isinstance(usage, dict) else getattr(usage, details, None)
+        if obj is not None:
+            reasoning = reasoning or num(obj, "reasoning_tokens")
+    return cached, reasoning
+
+
+def _cost(settings: Settings, in_tok: int, out_tok: int, cached: int = 0) -> float:
+    fresh = max(0, in_tok - cached)
+    return (fresh * settings.llm_price_input_per_mtok + cached * settings.llm_price_cached_input_per_mtok
+            + out_tok * settings.llm_price_output_per_mtok) / 1e6
 
 
 def _data_url(image: ImageInput) -> str:
@@ -520,7 +558,15 @@ class ModelGateway:
         last_error: Exception | None = None
         for provider, model in chain:
             if tracker:
-                tracker.check_llm(estimated_tokens=len(text) // 3)
+                try:
+                    tracker.check_llm(estimated_tokens=len(text) // 3)
+                except BudgetExceeded as exc:
+                    if exc.message.startswith("Execution deadline"):
+                        raise
+                    # the model budget for this run is used up: the platform carries on deterministically
+                    # instead of aborting the test
+                    raise ModelUnavailable(f"{exc.message}; continuing without the model",
+                                           details=exc.details) from exc
             attempts.append(f"{provider.name}:{model}")
             with span("model.call", provider=provider.name, model=model, tier=tier.value, agent=agent):
                 try:
@@ -535,13 +581,17 @@ class ModelGateway:
                     log.warning("model call failed", provider=provider.name, model=model, agent=agent,
                                 error=str(exc)[:200])
                     if tracker:
-                        tracker.record_llm(0, 0, 0.0, 0.0)
+                        tracker.record_llm_failure(agent=agent, model=model)
                     continue
             if tracker:
-                tracker.record_llm(usage.input_tokens, usage.output_tokens, usage.latency_ms, usage.cost_usd)
+                tracker.record_llm(usage.input_tokens, usage.output_tokens, usage.latency_ms, usage.cost_usd,
+                                   agent=agent, model=usage.model, tier=tier.value,
+                                   cached_tokens=usage.cached_input_tokens, reasoning_tokens=usage.reasoning_tokens)
             log.info("model call", provider=provider.name, model=usage.model, agent=agent, tier=tier.value,
                      input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
-                     latency_ms=round(usage.latency_ms, 1))
+                     cached_tokens=usage.cached_input_tokens, reasoning_tokens=usage.reasoning_tokens,
+                     cost_usd=round(usage.cost_usd, 5), latency_ms=round(usage.latency_ms, 1),
+                     run_total_tokens=(tracker.llm_input_tokens + tracker.llm_output_tokens) if tracker else None)
             return ModelResult(output=output, usage=usage, attempts=attempts)
         raise ModelError("All model candidates failed", details={"attempts": attempts, "last_error": str(last_error)})
 

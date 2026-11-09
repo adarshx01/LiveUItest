@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.agents.forms.option_matcher import match_option as _match_option
-from backend.agents.forms.value_normalizer import PICKER_TYPES, normalize_for_input
+from backend.agents.forms.value_normalizer import PICKER_TYPES, equivalent_values, normalize_for_input
 from backend.agents.governance.redaction import redact_text
 from backend.agents.grounding.element_grounder import ElementGrounder, GroundingContext
 from backend.agents.grounding.text_match import similarity
@@ -24,9 +24,13 @@ from backend.browser.js_probes import (
     ELEMENT_STATE,
     MASK_SENSITIVE_FIELD,
     SCROLL_INFO,
+    VALUE_FINGERPRINT,
     find_text_probe,
+    find_thing_probe,
+    fnv1a,
     scroll_edge_probe,
     scroll_probe,
+    set_value_probe,
 )
 from backend.browser.response_parser import ToolResponse
 from backend.browser.session_manager import BrowserSession
@@ -158,6 +162,8 @@ class InteractionExecutor:
         outcome = ActionOutcome.from_response(response, args={"target": target, "element": el.display(),
                                                               "text": "••••••" if sensitive else text},
                                               expected={"value": text, "sensitive": sensitive}, notes=notes)
+        if response.ok and not autocomplete and input_type not in PICKER_TYPES and el.tag != "select":
+            await self._make_value_stick(el, target, text, sensitive, outcome)
         if response.ok and sensitive and text and (el.input_type or "").lower() != "password":
             # browsers already render password inputs as discs; anything else would show the secret in the
             # after-action screenshot and every later one
@@ -170,6 +176,59 @@ class InteractionExecutor:
                 outcome.notes.append(f"selected autocomplete suggestion '{picked}'")
                 outcome.expected = {"value": picked, "sensitive": False}
         return outcome
+
+    async def _shown_value(self, el: InventoryElement, target: str, text: str, sensitive: bool) -> tuple[bool, str]:
+        """(field holds the typed value, how / what it shows), read from the field that was typed into."""
+
+        for handle in dict.fromkeys(h for h in (target, el.css_selector) if h):
+            if sensitive:
+                probe = await self.adapter.probe(VALUE_FINGERPRINT, handle, el.display()) or {}
+                if probe:
+                    return probe.get("hash") == fnv1a(text), f"{probe.get('length')} characters"
+            else:
+                state = await self.adapter.probe(ELEMENT_STATE, handle, el.display()) or {}
+                if state:
+                    shown = state.get("value")
+                    how = equivalent_values(text, shown)
+                    return how is not None, how or repr(shown)
+        return True, "not readable"  # the verifier decides; nothing to repair without a reading
+
+    async def _make_value_stick(self, el: InventoryElement, target: str, text: str, sensitive: bool,
+                                outcome: ActionOutcome) -> None:
+        """Typing succeeded but the application may not have accepted it.
+
+        ``fill`` sets the value without key events: masked editors, keypress filters and fields that format on
+        blur then drop or rewrite it. Read the field back; if the value is not there, type it again key by key
+        and leave the field (Tab), and as the last resort put it in through the DOM with the events frameworks
+        listen for. Each attempt is recorded; the verifier still checks the final value independently.
+        """
+
+        ok, shown = await self._shown_value(el, target, text, sensitive)
+        if ok:
+            return
+        outcome.notes.append(f"the field did not keep the value after fill (shows {shown}); retyping key by key")
+        await self.adapter.type_text(target, el.display(), "", sensitive=False)  # clear
+        await self.adapter.type_text(target, el.display(), text, slowly=True, sensitive=sensitive)
+        await self.adapter.press_key("Tab")  # blur: commit / format, as a person leaving the field would
+        await asyncio.sleep(0.3)
+        ok, shown = await self._shown_value(el, target, text, sensitive)
+        if ok:
+            outcome.notes.append(f"value accepted after typing key by key and leaving the field ({shown})")
+            outcome.args["method"] = "keystrokes+tab"
+            return
+        if sensitive:
+            outcome.notes.append("the field still does not hold the secret value (not injected: secrets are only typed)")
+            return
+        injected = await self.adapter.probe(set_value_probe(text), target, el.display()) or {}
+        await asyncio.sleep(0.3)
+        ok, shown = await self._shown_value(el, target, text, sensitive)
+        if ok:
+            outcome.notes.append(f"value set through the DOM with input/change/blur events ({shown}); keyboard input "
+                                 "was not accepted by this field")
+            outcome.args["method"] = "dom_injection"
+        else:
+            outcome.notes.append(f"the field rejects the value: shows {shown} after typing, key-by-key typing and DOM "
+                                 f"injection (injected value read back as {injected.get('value')!r})")
 
     async def _custom_picker(self, el: InventoryElement, text: str) -> ActionOutcome | None:
         """Dates and times entered into page-drawn pickers (read-only inputs, buttons, popover fields).
@@ -232,6 +291,9 @@ class InteractionExecutor:
             return outcome
         target = target_of(el)
         if target and (_is_native_select(el) or el.tag == "select"):
+            pair = self._range_partner(el, option, observation)
+            if pair is not None:
+                return await self._select_range(el, pair, option)
             native = await self.dropdowns.select_native(target, el.display(), option, css=el.css_selector)
             if native is not None:
                 return native
@@ -252,6 +314,40 @@ class InteractionExecutor:
             if picked is not None:
                 return picked
         return await self.dropdowns.select_custom(el, option)
+
+    @staticmethod
+    def _range_partner(el: InventoryElement, option: str, observation: Observation | None) -> InventoryElement | None:
+        """'Select "202404" and "202409" from the Data period dropdown' on a from ~ to pair of single selects:
+        the second value belongs to the select right of this one, on the same row."""
+
+        from backend.agents.grounding.spatial import same_row
+
+        choices = [c.strip() for c in option.split(",") if c.strip()]
+        if len(choices) != 2 or el.multiple or observation is None or el.bbox is None:
+            return None
+        right = [e for e in observation.elements if e is not el and e.visible and e.bbox is not None
+                 and (e.tag == "select" or _is_native_select(e)) and not e.multiple and same_row(e, el)
+                 and e.bbox.x > el.bbox.x + el.bbox.width * 0.5]
+        right.sort(key=lambda e: e.bbox.x if e.bbox else 0)
+        return right[0] if right and right[0].bbox and right[0].bbox.x - (el.bbox.x + el.bbox.width) < 160 else None
+
+    async def _select_range(self, first: InventoryElement, second: InventoryElement, option: str) -> ActionOutcome:
+        a, b = [c.strip() for c in option.split(",") if c.strip()]
+        start = await self.dropdowns.select_native(target_of(first) or "", first.display(), a, css=first.css_selector)
+        if start is None or not start.ok:
+            return start or ActionOutcome(False, error=f"{first.display()} is not a selectable list",
+                                          failure_category=FailureCategory.ELEMENT_NOT_FOUND)
+        end = await self.dropdowns.select_native(target_of(second) or "", second.display(), b, css=second.css_selector)
+        if end is None or not end.ok:
+            outcome = end or ActionOutcome(False, error=f"{second.display()} is not a selectable list",
+                                           failure_category=FailureCategory.ELEMENT_NOT_FOUND)
+            outcome.notes.insert(0, f"'{a}' selected in the first list of the range")
+            return outcome
+        start.notes.append(f"range: '{a}' in the first list, '{b}' in the list to its right ({second.display()})")
+        start.expected.update({"pair_target": end.expected.get("owner_target"), "pair_css": second.css_selector,
+                               "pair_option": b, "pair_description": second.display()})
+        start.args["values"] = [a, b]
+        return start
 
     async def set_checked(self, el: InventoryElement, desired: bool | None) -> ActionOutcome:
         current = el.checked
@@ -356,9 +452,16 @@ class InteractionExecutor:
         spec = step.wait
         if spec is None:
             return ActionOutcome(False, error="missing wait spec")
-        if spec.seconds is not None and not spec.until_text and not spec.until_text_gone:
+        if spec.seconds is not None and not spec.until_text and not spec.until_text_gone and not spec.until_stable:
             response = await self.adapter.wait_for(seconds=spec.seconds)
+            if not response.ok and "modal state" in (response.error or ""):
+                await asyncio.sleep(spec.seconds)  # browser_wait_for refuses while a native dialog is open
+                return ActionOutcome(True, args={"seconds": spec.seconds}, notes=["paused (a native dialog is open)"])
             return ActionOutcome.from_response(response, args={"seconds": spec.seconds})
+        if spec.until_stable:
+            return await self._wait_until_settled(spec.timeout_seconds)
+        if spec.until_text:
+            return await self._wait_for_thing(spec.until_text, spec.timeout_seconds)
         text = spec.until_text or spec.until_text_gone or ""
         present = await self.adapter.probe(find_text_probe(text)) or {}
         literal_known = bool(present.get("hits")) or bool(spec.until_text)
@@ -374,6 +477,46 @@ class InteractionExecutor:
             response = await self.adapter.wait_for(text=spec.until_text, text_gone=spec.until_text_gone, seconds=20)
             return ActionOutcome.from_response(response, args={"text": spec.until_text, "gone": spec.until_text_gone})
         return ActionOutcome(False, error="nothing to wait for")
+
+    async def _wait_until_settled(self, timeout: float) -> ActionOutcome:
+        """No busy indicator, nothing loading, and the page stopped changing for two consecutive looks."""
+
+        deadline = asyncio.get_running_loop().time() + timeout
+        previous: tuple[int, int, str] | None = None
+        stable_rounds, looks = 0, 0
+        while asyncio.get_running_loop().time() < deadline:
+            obs = await self.observer.observe(with_tabs=False)
+            looks += 1
+            if obs.modal_state is not None:
+                return ActionOutcome(True, notes=[f"a native {obs.modal_state.kind} is open: {obs.modal_state.message[:80]}"],
+                                     expected={"loading": False})
+            signature = (len(obs.elements), len(" ".join(obs.visible_text)), obs.url)
+            if not obs.page_state.loading and signature == previous:
+                stable_rounds += 1
+                if stable_rounds >= 1:
+                    return ActionOutcome(True, notes=[f"page settled after {looks} looks"],
+                                         expected={"loading": False, "settled": True})
+            else:
+                stable_rounds = 0
+            previous = signature
+            await asyncio.sleep(0.6)
+        return ActionOutcome(False, error=f"the page was still loading or changing after {timeout:.0f}s",
+                             failure_category=FailureCategory.ACTION_TIMEOUT)
+
+    async def _wait_for_thing(self, what: str, timeout: float) -> ActionOutcome:
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            found = await self.adapter.probe(find_thing_probe(what)) or {}
+            if found.get("found"):
+                where = (found.get("text") or found.get("named"))[0]
+                how = "text" if found.get("text") else "element named / identified"
+                return ActionOutcome(True, notes=[f"'{what}' appeared ({how}: {str(where)[:100]})"],
+                                     expected={"text_visible": True, "waited_for": what})
+            if asyncio.get_running_loop().time() >= deadline:
+                return ActionOutcome(False, error=f"nothing matching '{what}' appeared within {timeout:.0f}s (looked at "
+                                                  f"visible text, labels, alt/title text, ids and classes)",
+                                     failure_category=FailureCategory.ACTION_TIMEOUT)
+            await asyncio.sleep(0.6)
 
     async def switch_tab(self, step: Step, observation: Observation) -> ActionOutcome:
         spec = step.tab

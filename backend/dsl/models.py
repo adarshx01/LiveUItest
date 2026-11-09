@@ -127,6 +127,12 @@ class TargetSpec(BaseModel):
     frame_hint: str | None = None
     url: str | None = None
     option_text: str | None = None  # option to locate inside a dropdown ("dropdown containing India")
+    # the name is data (a patient, customer or record name): matched literally, never typo-repaired, so
+    # "Abcd Xy" never passes for "Abc Xy". Labels of controls stay typo-tolerant ("Data Perid" -> "Data period").
+    literal: bool = False
+    # spatial relation to another element: "next to Upload Documents" -> relation="next_to", anchor="Upload Documents"
+    relation: str | None = None  # right_of, left_of, below, above, next_to, near, inside
+    anchor: str | None = None
 
 
 class ValueSpec(BaseModel):
@@ -167,10 +173,13 @@ class AssertionSpec(BaseModel):
 class ConditionSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["variable_equals", "text_visible", "element_visible", "url_contains", "always"]
+    kind: Literal["variable_equals", "text_visible", "element_visible", "url_contains", "assertion", "always"]
     variable: str | None = None
     expected: str | None = None
     target: TargetSpec | None = None
+    # kind "assertion": the condition is a full check ("the checkbox HP is checked", "the total number of
+    # range columns is 11") evaluated by the assertion engine, not a text search
+    assertion: AssertionSpec | None = None
     negate: bool = False
     description: str = ""
 
@@ -182,6 +191,9 @@ class WaitSpec(BaseModel):
     until_text: str | None = None
     until_text_gone: str | None = None
     until_target: TargetSpec | None = None
+    # "wait until the results are loaded": no busy indicator, no pending navigation, DOM no longer changing
+    until_stable: bool = False
+    timeout_seconds: float = 30.0
 
 
 class ScrollSpec(BaseModel):

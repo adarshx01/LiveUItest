@@ -163,7 +163,7 @@ def test_card_named_by_its_leading_title():
 
 def test_exact_names_are_never_typo_repaired():
     target = build_target("Abc Xy", "click")
-    target.exact_name = "Abc Xy"
+    target.exact_name, target.literal = "Abc Xy", True
     exact, _ = name_score(target, _el("Abc Xy"))
     near, _ = name_score(target, _el("Abcd Xy"))
     assert exact == 1.0 and near < 0.8

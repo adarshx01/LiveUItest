@@ -121,23 +121,50 @@ AuditHook = Callable[[dict[str, Any]], Awaitable[None] | None]
 _TARGET_KEYS = (("target", "element"), ("startTarget", "startElement"), ("endTarget", "endElement"))
 
 
+_ARIA_ROLES = {"button", "link", "textbox", "searchbox", "combobox", "listbox", "option", "checkbox", "radio",
+               "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem", "cell", "gridcell",
+               "row", "heading", "img", "slider", "spinbutton", "generic", "dialog"}
+_OWNER_ROLES = ("combobox", "listbox")
+
+
 def _refs_for_description(snapshot_yaml: str, description: str) -> list[str]:
-    """Refs in a fresh snapshot whose accessible name is the element this call was aimed at."""
+    """Refs in a fresh snapshot of the element this call was aimed at, by its role and accessible name.
+
+    ``select owning option "X"`` names the native select that *contains* option X: the ref returned is the
+    select's, never the option's (select_option on an option fails with "Element is not a <select>").
+    """
 
     quoted = re.findall(r'"([^"]+)"', description)
     if not quoted:
         return []
     name = quoted[-1].strip()
-    if len(name) < 2:
+    if not name:
         return []
-    role = description.split('"', 1)[0].strip().lower()
+    prefix = description.split('"', 1)[0].strip().lower()
     from backend.agents.observation.snapshot_parser import parse_snapshot
 
     nodes = parse_snapshot(snapshot_yaml)
-    exact = [n.ref for n in nodes if n.ref and (n.name or "") == name and (not role or n.role == role)]
+    if prefix.startswith("select owning"):
+        owners: list[str] = []
+        for node in nodes:
+            if node.role != "option" or (node.name or "").strip() != name:
+                continue
+            cur = node.parent_index
+            while cur is not None and nodes[cur].role not in _OWNER_ROLES:
+                cur = nodes[cur].parent_index
+            if cur is not None and nodes[cur].ref and nodes[cur].ref not in owners:
+                owners.append(nodes[cur].ref)
+        return owners
+    first = prefix.split()[0] if prefix else ""
+    role = first if first in _ARIA_ROLES else ""
+    if len(name) < 2 and not role:
+        return []  # a one-character name ("<", ">") is only safe together with its role
+    exact = [n.ref for n in nodes if n.ref and (n.name or "").strip() == name and (not role or n.role == role)]
     if exact:
         return exact
-    by_name = [n.ref for n in nodes if n.ref and (n.name or "") == name]
+    if role:
+        return []  # never re-target a button "X" to some other kind of element that happens to be named X
+    by_name = [n.ref for n in nodes if n.ref and (n.name or "").strip() == name]
     return by_name if len(by_name) == 1 else []
 
 

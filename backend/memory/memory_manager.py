@@ -119,7 +119,9 @@ def step_text(step: Step) -> str:
 def confidence_from(successes: int, failures: int, last_verified: dt.datetime | None) -> float:
     base = (successes + 1) / (successes + failures + 2)
     if last_verified is not None:
-        age_days = (utcnow() - last_verified).total_seconds() / 86400
+        if last_verified.tzinfo is None:  # rows written before timestamps were normalised to aware UTC
+            last_verified = last_verified.replace(tzinfo=dt.UTC)
+        age_days = max(0.0, (utcnow() - last_verified).total_seconds() / 86400)
         base *= max(0.7, 1 - age_days / 365)  # gentle decay for stale knowledge
     return round(min(0.99, base), 4)
 

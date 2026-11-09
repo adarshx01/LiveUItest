@@ -30,6 +30,12 @@ class BudgetTracker:
     paused_seconds: float = 0.0
     _pause_started: float | None = None
     agent_calls: dict[str, int] = field(default_factory=dict)
+    llm_cached_tokens: int = 0
+    llm_reasoning_tokens: int = 0
+    llm_failed_calls: int = 0
+    # usage by agent and by model: calls, input/output/cached/reasoning tokens, cost, latency
+    llm_by_agent: dict[str, dict[str, float]] = field(default_factory=dict)
+    llm_by_model: dict[str, dict[str, float]] = field(default_factory=dict)
 
     # ---------------------------------------------------------------- checks
     def elapsed(self) -> float:
@@ -59,12 +65,36 @@ class BudgetTracker:
             raise BudgetExceeded("Tool call budget exhausted", details={"max_tool_calls": self.limits.max_tool_calls})
 
     # ---------------------------------------------------------------- records
-    def record_llm(self, input_tokens: int, output_tokens: int, latency_ms: float, cost_usd: float) -> None:
+    def record_llm(self, input_tokens: int, output_tokens: int, latency_ms: float, cost_usd: float, *,
+                   agent: str = "unknown", model: str = "unknown", tier: str = "", cached_tokens: int = 0,
+                   reasoning_tokens: int = 0) -> None:
         self.llm_calls += 1
         self.llm_input_tokens += input_tokens
         self.llm_output_tokens += output_tokens
         self.model_latency_ms += latency_ms
         self.llm_cost_usd += cost_usd
+        self.llm_cached_tokens += cached_tokens
+        self.llm_reasoning_tokens += reasoning_tokens
+        for table, key in ((self.llm_by_agent, agent), (self.llm_by_model, model)):
+            row = table.setdefault(key, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
+                                         "reasoning_tokens": 0, "cost_usd": 0.0, "latency_ms": 0.0, "failed": 0})
+            row["calls"] += 1
+            row["input_tokens"] += input_tokens
+            row["output_tokens"] += output_tokens
+            row["cached_tokens"] += cached_tokens
+            row["reasoning_tokens"] += reasoning_tokens
+            row["cost_usd"] = round(row["cost_usd"] + cost_usd, 6)
+            row["latency_ms"] = round(row["latency_ms"] + latency_ms, 1)
+
+    def record_llm_failure(self, *, agent: str = "unknown", model: str = "unknown") -> None:
+        """A failed attempt costs a call slot (it may have been billed) but adds no tokens."""
+
+        self.llm_calls += 1
+        self.llm_failed_calls += 1
+        for table, key in ((self.llm_by_agent, agent), (self.llm_by_model, model)):
+            row = table.setdefault(key, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
+                                         "reasoning_tokens": 0, "cost_usd": 0.0, "latency_ms": 0.0, "failed": 0})
+            row["failed"] += 1
 
     def record_tool(self, latency_ms: float) -> None:
         self.tool_calls += 1
@@ -88,12 +118,27 @@ class BudgetTracker:
             "llm_input_tokens": self.llm_input_tokens,
             "llm_output_tokens": self.llm_output_tokens,
             "llm_cost_usd": round(self.llm_cost_usd, 6),
+            "llm_cached_tokens": self.llm_cached_tokens,
+            "llm_reasoning_tokens": self.llm_reasoning_tokens,
+            "llm_failed_calls": self.llm_failed_calls,
             "tool_calls": self.tool_calls,
             "elapsed_seconds": round(self.elapsed(), 2),
             "remaining_seconds": round(self.remaining_seconds(), 2),
             "model_latency_ms": round(self.model_latency_ms, 1),
             "tool_latency_ms": round(self.tool_latency_ms, 1),
         }
+
+
+def token_usage(tracker: BudgetTracker) -> dict[str, object]:
+    """Run-level model usage for reports and the CLI summary."""
+
+    return {"calls": tracker.llm_calls, "failed_calls": tracker.llm_failed_calls,
+            "input_tokens": tracker.llm_input_tokens, "output_tokens": tracker.llm_output_tokens,
+            "cached_tokens": tracker.llm_cached_tokens, "reasoning_tokens": tracker.llm_reasoning_tokens,
+            "total_tokens": tracker.llm_input_tokens + tracker.llm_output_tokens,
+            "cost_usd": round(tracker.llm_cost_usd, 6), "model_latency_ms": round(tracker.model_latency_ms, 1),
+            "by_agent": {k: dict(v) for k, v in sorted(tracker.llm_by_agent.items())},
+            "by_model": {k: dict(v) for k, v in sorted(tracker.llm_by_model.items())}}
 
 
 _current: contextvars.ContextVar[BudgetTracker | None] = contextvars.ContextVar("budget_tracker", default=None)

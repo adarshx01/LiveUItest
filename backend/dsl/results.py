@@ -205,6 +205,11 @@ class ExecutionMetrics(BaseModel):
     llm_input_tokens: int = 0
     llm_output_tokens: int = 0
     llm_cost_usd: float = 0.0
+    llm_cached_tokens: int = 0
+    llm_reasoning_tokens: int = 0
+    llm_failed_calls: int = 0
+    llm_usage_by_agent: dict[str, dict[str, float]] = Field(default_factory=dict)
+    llm_usage_by_model: dict[str, dict[str, float]] = Field(default_factory=dict)
     tool_calls: int = 0
     duration_ms: float = 0.0
     model_latency_ms: float = 0.0

@@ -75,6 +75,7 @@ def node(name: str) -> Callable[[NodeFn], NodeFn]:
                 update = {"phase": "error", "failure_context": {"category": FailureCategory.UNKNOWN_FAILURE.value,
                                                                 "root_cause": f"{type(exc).__name__}: {exc}"[:300],
                                                                 "node": name}}
+                _invalidate_after_crash(runtime_registry.get(execution_id), name)
             duration = (time.perf_counter() - started) * 1000
             runtime = runtime_registry.get(execution_id)
             if runtime is not None and runtime.recorder is not None:
@@ -88,6 +89,19 @@ def node(name: str) -> Callable[[NodeFn], NodeFn]:
         return wrapper
 
     return decorator
+
+
+# a crash in these nodes leaves the step's decision half-made; it must not be acted on
+_DECISION_NODES = {"observe_current_page", "resolve_target_element", "ground_target", "validate_action",
+                   "retrieve_step_memory"}
+
+
+def _invalidate_after_crash(runtime: ExecutionRuntime | None, node_name: str) -> None:
+    if runtime is None or runtime.work is None or node_name not in _DECISION_NODES:
+        return
+    runtime.work.decision = None
+    runtime.work.element = None
+    runtime.work.policy = None
 
 
 def _runtime(state: TestExecutionState) -> ExecutionRuntime:
@@ -361,6 +375,20 @@ async def _evaluate_condition(runtime: ExecutionRuntime, step: Step) -> tuple[bo
         actual = runtime.request.variables.get(cond.variable or "", runtime.captured.get(cond.variable or ""))
         result = normalize_text(actual) == normalize_text(cond.expected)
         return result != cond.negate, f"{cond.variable}={actual!r}"
+    if cond.kind == "assertion" and cond.assertion is not None and runtime.assertions is not None:
+        from backend.agents.verification.assertion_engine import AssertionContext
+
+        probe = Step(id=f"{step.id}_cond", index=step.index, original_text=cond.description or step.original_text,
+                     action=ActionType.ASSERT, assertion=cond.assertion)
+        result, obs = await runtime.assertions.evaluate(cond.assertion, probe, AssertionContext(
+            url_at_step_start=runtime.observation.url if runtime.observation else None, downloads=runtime.downloads))
+        if obs is not None:
+            runtime.observation, runtime.dirty = obs, False
+        # the evaluated check is evidence in the report, whichever branch it leads to
+        runtime.results[step.id].assertions.append(result)
+        passed = result.status == "PASSED"
+        detail = f"{cond.description} (actual: {str(result.actual)[:80]!r})" if not passed else cond.description
+        return passed != cond.negate, detail
     obs = await runtime.observe(force=True)
     if cond.kind == "url_contains":
         result = (cond.expected or "").lower() in obs.url.lower()
@@ -656,10 +684,11 @@ async def fail_step(state: TestExecutionState, config: RunnableConfig | None = N
     await runtime.finish_step(step, status, message)
     if runtime.memory is not None and work.before is not None and work.before.fingerprint is not None and \
             not context.get("product_failure"):
-        await runtime.memory.record_failure(execution_id=runtime.execution_id, step=step,
-                                            route_pattern=work.before.fingerprint.route_pattern, category=category,
-                                            root_cause=context.get("root_cause", ""), evidence=evidence,
-                                            failed_strategies=work.failed_strategies, attempts=work.recovery_cycles)
+        await runtime.memory_safely("record failure memory", runtime.memory.record_failure,
+                                    execution_id=runtime.execution_id, step=step,
+                                    route_pattern=work.before.fingerprint.route_pattern, category=category,
+                                    root_cause=context.get("root_cause", ""), evidence=evidence,
+                                    failed_strategies=work.failed_strategies, attempts=work.recovery_cycles)
     remaining = [sid for sid in (state.get("queue") or [])]
     hard_stop = category in (FailureCategory.CAPTCHA_DETECTED.value, FailureCategory.BROWSER_DISCONNECTED.value,
                              FailureCategory.UNEXPECTED_NAVIGATION.value)

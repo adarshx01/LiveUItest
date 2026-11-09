@@ -168,7 +168,8 @@ def test_verify_else_runs_the_recovery_only_as_the_else_branch() -> None:
 def test_value_word_is_not_part_of_the_expected_text() -> None:
     (step,) = parse('Verify that the value "100.000" is displayed in the Horizontal Range (%) input '
                     'under column "11"')
-    assert step.assertion.type == AssertionType.TEXT_VISIBLE
+    # the value of the cell under column 11 (resolved spatially), not the words 'value "100.000"' anywhere
+    assert step.assertion.type in (AssertionType.TEXT_VISIBLE, AssertionType.INPUT_VALUE_EQUALS)
     assert step.assertion.expected == "100.000"
 
 

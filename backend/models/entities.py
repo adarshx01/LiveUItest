@@ -22,6 +22,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
     func,
 )
@@ -41,12 +42,38 @@ def utcnow() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
 
 
+class UTCDateTime(TypeDecorator[dt.datetime]):
+    """Timestamps are always timezone-aware UTC in Python, whatever the database keeps.
+
+    PostgreSQL stores ``timestamptz`` and returns aware values; SQLite has no timezone type and returns
+    naive ones. Mixing the two made ``utcnow() - row.last_verified_at`` raise mid-run (memory confidence),
+    so values are normalised on the way in and on the way out.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: dt.datetime | None, dialect: Any) -> dt.datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt.UTC)
+        return value.astimezone(dt.UTC)
+
+    def process_result_value(self, value: dt.datetime | None, dialect: Any) -> dt.datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=dt.UTC)
+        return value.astimezone(dt.UTC)
+
+
 class Base(DeclarativeBase):
     type_annotation_map = {dict[str, Any]: JSONType, list[Any]: JSONType}
 
 
 class TimestampMixin:
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, server_default=func.now())
 
 
 # --------------------------------------------------------------------------- tenancy
@@ -84,7 +111,7 @@ class Application(Base, TimestampMixin):
     known_routes: Mapped[list[Any]] = mapped_column(default=list)
     auth_behavior: Mapped[dict[str, Any]] = mapped_column(default=dict)
     fingerprint: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class ApplicationEnvironment(Base, TimestampMixin):
@@ -110,7 +137,7 @@ class EnvironmentCredential(Base, TimestampMixin):
     environment_id: Mapped[str] = mapped_column(String(64), default="*")
     name: Mapped[str] = mapped_column(String(128))
     encrypted_value: Mapped[str] = mapped_column(Text)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 # --------------------------------------------------------------------------- tests
@@ -134,7 +161,7 @@ class TestCase(Base, TimestampMixin):
     tags: Mapped[list[Any]] = mapped_column(default=list)
     current_version: Mapped[int] = mapped_column(Integer, default=1)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class TestCaseVersion(Base, TimestampMixin):
@@ -179,7 +206,7 @@ class Schedule(Base, TimestampMixin):
     target_id: Mapped[str] = mapped_column(String(64))
     interval_minutes: Mapped[int] = mapped_column(Integer)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_run_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     options: Mapped[dict[str, Any]] = mapped_column(default=dict)
 
 
@@ -207,8 +234,8 @@ class ExecutionRun(Base, TimestampMixin):
     video_uri: Mapped[str | None] = mapped_column(String(512), nullable=True)
     flaky: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class ExecutionStep(Base):
@@ -236,8 +263,8 @@ class BrowserSessionRecord(Base):
     execution_id: Mapped[str] = mapped_column(ForeignKey("execution_runs.id"), index=True)
     server_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     options: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    ended_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class BrowserSessionEvent(Base):
@@ -323,7 +350,7 @@ class Approval(Base, TimestampMixin):
     request: Mapped[dict[str, Any]] = mapped_column(default=dict)
     decided_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    decided_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class Artifact(Base, TimestampMixin):
@@ -344,7 +371,7 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
-    ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow)
     actor: Mapped[str] = mapped_column(String(128))
     action: Mapped[str] = mapped_column(String(64))
     resource_type: Mapped[str] = mapped_column(String(64))
@@ -358,7 +385,7 @@ class ExecutionMetric(Base):
     execution_id: Mapped[str] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(64), index=True)
     value: Mapped[float] = mapped_column(Float)
-    ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ts: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 # --------------------------------------------------------------------------- memory
@@ -378,8 +405,8 @@ class PageFingerprintRecord(Base, MemoryScopeMixin):
     title_pattern: Mapped[str] = mapped_column(String(512), default="")
     signature: Mapped[list[Any]] = mapped_column(default=list)
     seen_count: Mapped[int] = mapped_column(Integer, default=1)
-    first_seen: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    last_seen: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    first_seen: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    last_seen: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class ApplicationMemory(Base, MemoryScopeMixin):
@@ -389,7 +416,7 @@ class ApplicationMemory(Base, MemoryScopeMixin):
     key: Mapped[str] = mapped_column(String(128))
     value: Mapped[dict[str, Any]] = mapped_column(default=dict)
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class PageMemory(Base, MemoryScopeMixin):
@@ -404,7 +431,7 @@ class PageMemory(Base, MemoryScopeMixin):
     signature: Mapped[list[Any]] = mapped_column(default=list)
     embedding: Mapped[list[float] | None] = mapped_column(EmbeddingType, nullable=True)
     seen_count: Mapped[int] = mapped_column(Integer, default=1)
-    last_verified_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    last_verified_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
 
 
 class LocatorMemory(Base, MemoryScopeMixin):
@@ -425,9 +452,9 @@ class LocatorMemory(Base, MemoryScopeMixin):
     supersedes: Mapped[str | None] = mapped_column(String(64), nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(EmbeddingType, nullable=True)
     last_execution_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    last_verified_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    last_verified_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 Index("ix_locator_memory_lookup", LocatorMemory.application_id, LocatorMemory.route_pattern,
@@ -445,7 +472,7 @@ class TestExecutionMemory(Base, MemoryScopeMixin):
     failure_count: Mapped[int] = mapped_column(Integer, default=0)
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
     last_execution_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    last_verified_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_verified_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class InteractionPattern(Base):
@@ -460,7 +487,7 @@ class InteractionPattern(Base):
     success_count: Mapped[int] = mapped_column(Integer, default=0)
     failure_count: Mapped[int] = mapped_column(Integer, default=0)
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
-    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class FailureMemory(Base, MemoryScopeMixin):
@@ -477,7 +504,7 @@ class FailureMemory(Base, MemoryScopeMixin):
     root_cause: Mapped[str] = mapped_column(Text, default="")
     recovery_attempts: Mapped[int] = mapped_column(Integer, default=0)
     evidence: Mapped[list[Any]] = mapped_column(default=list)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
 
 class MemoryVersion(Base):
@@ -489,4 +516,4 @@ class MemoryVersion(Base):
     snapshot: Mapped[dict[str, Any]] = mapped_column(default=dict)
     change_reason: Mapped[str] = mapped_column(Text, default="")
     execution_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow)

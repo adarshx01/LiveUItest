@@ -143,6 +143,7 @@ class Settings(BaseSettings):
     # USD per million tokens, used for agent cost reporting
     llm_price_input_per_mtok: float = 4.0
     llm_price_output_per_mtok: float = 20.0
+    llm_price_cached_input_per_mtok: float = 1.0
 
     # ---- safety / governance ------------------------------------------------
     allowed_domains: list[str] = Field(default_factory=list)

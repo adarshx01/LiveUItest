@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from backend.agents.forms.value_normalizer import equivalent_values
 from backend.agents.grounding.locator_strategy import LocatorStrategy, resolve_strategy
 from backend.agents.grounding.text_match import similarity
 from backend.browser.js_probes import (
@@ -106,21 +107,45 @@ class ActionVerifier:
         typed_value = expected.get("value") is not None and expected.get("selected_option") is None
         if (action in (ActionType.FILL, ActionType.TYPE, ActionType.CLEAR) or typed_value) and expected.get("kind") is None:
             el = self.relocate(element, before, after)
-            if el is None or not el.ref:
+            # read the field that was typed into first: after a partial postback the re-located element can be a
+            # different field with the same (inferred) name, e.g. the many "～" range cells
+            handles = list(dict.fromkeys(h for h in (outcome.args.get("target"), el.ref if el else None,
+                                                     el.css_selector if el else None,
+                                                     element.css_selector if element else None) if h))
+            if not handles:
                 checks.append({"check": "field_located", "ok": False})
                 return result("unverified", "field could not be re-located after typing")
+            description = (el or element).display() if (el or element) else "field"
             want = "" if action == ActionType.CLEAR else str(expected.get("value", ""))
+            ok, actual, how = False, None, None
             if expected.get("sensitive"):
-                probe = await self.adapter.probe(VALUE_FINGERPRINT, el.ref, el.display()) or {}
-                ok = probe.get("hash") == fnv1a(want)
-                checks.append({"check": "value_fingerprint", "ok": ok, "detail": {"length": probe.get("length")}})
+                for handle in handles:
+                    probe = await self.adapter.probe(VALUE_FINGERPRINT, str(handle), description) or {}
+                    if probe:
+                        ok = probe.get("hash") == fnv1a(want)
+                        checks.append({"check": "value_fingerprint", "ok": ok,
+                                       "detail": {"length": probe.get("length")}})
+                        break
             else:
-                state = await self.adapter.probe(ELEMENT_STATE, el.ref, el.display()) or {}
-                actual = state.get("value")
-                ok = actual == want or (actual is not None and actual.strip() == want.strip())
-                checks.append({"check": "field_value", "ok": ok, "detail": {"expected": want, "actual": actual}})
+                for handle in handles:
+                    state = await self.adapter.probe(ELEMENT_STATE, str(handle), description) or {}
+                    if not state:
+                        continue
+                    actual = state.get("value")
+                    how = equivalent_values(want, actual)
+                    ok = how is not None
+                    checks.append({"check": "field_value", "ok": ok,
+                                   "detail": {"expected": want, "actual": actual, "match": how, "handle": handle}})
+                    if ok:
+                        break
             if not ok:
-                return result("failed", "field does not contain the entered value", FailureCategory.VERIFICATION_FAILED)
+                if expected.get("sensitive"):
+                    return result("failed", "field does not contain the entered (masked) value",
+                                  FailureCategory.VERIFICATION_FAILED)
+                return result("failed", f"field shows {actual!r} instead of the entered {want!r}",
+                              FailureCategory.VERIFICATION_FAILED)
+            if how and how != "exact":
+                return result("verified", f"field contains the entered value ({how})")
             return result("verified", "field contains the entered value")
 
         if expected.get("kind") in ("date", "time"):
@@ -159,12 +184,23 @@ class ActionVerifier:
                            el.ref if el else None, el.css_selector if el else None]
                 state = {}
                 for handle in dict.fromkeys(h for h in handles if h):
-                    state = await self.adapter.probe(SELECT_STATE, str(handle), "native select") or {}
+                    state = await self.adapter.probe(SELECT_STATE, str(handle),
+                                                     str(expected.get("owner_description") or "native select")) or {}
                     if state.get("isSelect"):
                         break
                 selected = [str(s) for s in state.get("selected") or []]
                 ok = bool(state.get("isSelect")) and all(any(similarity(w, s) >= 0.95 for s in selected)
                                                          for w in wanted)
+                if ok and expected.get("pair_option"):  # from ~ to range: the second list holds the second value
+                    pair_state: dict[str, Any] = {}
+                    for handle in dict.fromkeys(h for h in (expected.get("pair_target"), expected.get("pair_css")) if h):
+                        pair_state = await self.adapter.probe(SELECT_STATE, str(handle),
+                                                              str(expected.get("pair_description") or "native select")) or {}
+                        if pair_state.get("isSelect"):
+                            break
+                    pair_selected = [str(x) for x in pair_state.get("selected") or []]
+                    ok = any(similarity(str(expected["pair_option"]), x) >= 0.95 for x in pair_selected)
+                    selected = selected + pair_selected
             elif kind == "custom" and expected.get("confirmed"):
                 ok = True  # the engine saw every chosen option marked selected before closing the list
                 selected = wanted
@@ -215,10 +251,19 @@ class ActionVerifier:
             status = after.page_state.http_status
             # A gateway status (401/403) on a page that rendered a real application is not a failed navigation.
             # error_page is set only when the document also looks like an error.
-            ok = bool(after.url) and not after.page_state.error_page and not after.page_state.loading
+            interactive = sum(1 for e in after.elements if e.visible and e.role in _USABLE_ROLES)
+            # a busy indicator that never fully clears (polling widgets, a permanent spinner in the header) must
+            # not fail a navigation whose page is plainly on screen and usable
+            usable = interactive >= 3
+            ok = bool(after.url) and not after.page_state.error_page and (not after.page_state.loading or usable)
             checks.append({"check": "page_loaded", "ok": ok, "detail": {"url": after.url, "status": status,
                                                                         "title": after.title,
+                                                                        "loading": after.page_state.loading,
+                                                                        "interactive_elements": interactive,
                                                                         "error_page": after.page_state.error_page}})
+            if ok and after.page_state.loading:
+                return result("verified", f"loaded {after.url} ({interactive} usable controls; a busy indicator "
+                                          f"is still shown)")
             if not ok:
                 return result("failed", f"page did not load correctly (status {status}, title {after.title!r})",
                               FailureCategory.APPLICATION_ERROR if after.page_state.error_page else
@@ -232,6 +277,12 @@ class ActionVerifier:
                                           expected.get("tab") in ("new", "closed"))
             checks.append({"check": "active_tab", "ok": ok, "detail": current.model_dump() if current else None})
             return result("verified" if ok else "failed", "", None if ok else FailureCategory.POPUP_OR_DIALOG_ERROR)
+
+        if expected.get("native_dialog"):
+            ok = after.modal_state is None
+            checks.append({"check": "native_dialog_answered", "ok": ok})
+            return result("verified" if ok else "failed", "native dialog answered" if ok else
+                          "the native dialog is still open", None if ok else FailureCategory.POPUP_OR_DIALOG_ERROR)
 
         if action in (ActionType.ACCEPT_DIALOG, ActionType.DISMISS_DIALOG):
             ok = after.modal_state is None and (expected.get("dialog_closed") is None or not any(
@@ -279,6 +330,10 @@ class ActionVerifier:
                       ActionType.SWITCH_FRAME):
             return result("verified", "")
         return result("verified" if outcome.ok else "unverified", "")
+
+
+_USABLE_ROLES = {"button", "link", "textbox", "searchbox", "combobox", "checkbox", "radio", "switch", "tab",
+                 "menuitem", "row", "cell"}
 
 
 def _custom_selected(option: str, trigger: InventoryElement | None, after: Observation,

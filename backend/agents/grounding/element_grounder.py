@@ -9,6 +9,7 @@ drives the execute / enhanced-verify / refine / ask-human decision.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +20,7 @@ from backend.agents.grounding.locator_strategy import (
     StrategyResolution,
     resolve_strategy,
 )
+from backend.agents.grounding.spatial import best_relation, find_anchors, reading_order_key, same_row
 from backend.agents.grounding.text_match import similarity, split_identifier, strip_badge
 from backend.agents.planner.lexicon import (
     ACTION_ROLE_COMPAT,
@@ -54,6 +56,7 @@ class GroundingContext:
     excluded_keys: set[str] = field(default_factory=set)
     frame_hint: str | None = None
     allow_hidden: bool = False
+    anchors: list[Any] | None = None  # spatial anchors of target.relation, found once per grounding
 
 
 @dataclass
@@ -129,9 +132,9 @@ def name_score(target: TargetSpec, el: InventoryElement) -> tuple[float, str]:
     best_pair = ("", "")
     for phrase, pw in _target_phrases(target):
         for text, tw in _element_texts(el):
-            # an exact name ("the patient named Abc Xy", a quoted label) is data: never typo-repaired, so
-            # "Abcd Xy" does not pass for "Abc Xy"
-            scorer = similarity if target.exact_name else match_score
+            # a literal name ("the patient named Abc Xy") is data: never typo-repaired, so "Abcd Xy" does not
+            # pass for "Abc Xy"; control labels stay typo-tolerant
+            scorer = similarity if target.literal else match_score
             s = scorer(phrase, text) * pw * tw
             np_, nt = normalize_text(phrase), normalize_text(text)
             if len(np_.split()) >= 2 and nt.startswith(np_ + " "):
@@ -185,6 +188,11 @@ def looks_like_button(el: InventoryElement) -> bool:
 def looks_like_dropdown(el: InventoryElement) -> bool:
     return bool(el.haspopup or el.controls or DROPDOWN_CLASS_RE.search(el.classes or "")
                 or PROMPT_RE.match(el.text or el.name or ""))
+
+
+SEPARATOR_NAME_RE = re.compile(r"[~～〜\-–—:|/・,]+|to|thru|through|から|まで", re.IGNORECASE)
+GENERIC_KINDS = {"button", "link", "row", "cell", "field", "input", "dropdown", "checkbox", "icon", "item", "box",
+                 "textbox", "option", "tab", "image", "radio", "menu", "control", "element"}
 
 
 def _grid_label(el: InventoryElement) -> set[str]:
@@ -301,6 +309,21 @@ def resolve_grid_cell(observation: Observation, target: TargetSpec) -> Inventory
     return None
 
 
+UPLOAD_WORDS_RE = re.compile(r"\b(upload|uploads|attach|attachment|browse|choose\s+files?|select\s+files?|add\s+files?|"
+                             r"drop\s+files?|import\s+file|file\(s\)|add\s+document|upload\s+invoice)\b", re.IGNORECASE)
+
+
+def _opens_file_chooser(el: InventoryElement) -> bool:
+    """A button, link or clickable area that opens the browser's file chooser ("Upload File(s)", "Browse...")."""
+
+    if el.role not in ("button", "link", "generic", "img", "menuitem") and not el.clickable_hint:
+        return False
+    if el.semantic_purpose == "upload":
+        return True
+    words = " ".join(filter(None, [el.name, el.text, el.title, el.label, el.test_id, el.dom_id]))
+    return bool(UPLOAD_WORDS_RE.search(words))
+
+
 def is_fillable(el: InventoryElement) -> bool:
     """Text fields, but also browser-rendered pickers (date, time, color, range, number) and editable regions."""
 
@@ -339,6 +362,16 @@ def _context_score(target: TargetSpec, el: InventoryElement, ctx: GroundingConte
     score = 0.6
     notes: list[str] = []
     c = el.context
+    if target.relation and target.anchor:
+        if not ctx.anchors:
+            notes.append(f"anchor '{target.anchor}' not found on the page")
+            return 0.45, notes
+        rel, why = best_relation(target.relation, el, ctx.anchors)
+        if rel > 0:
+            notes.append(f"{why} ({rel:.2f})")
+            return round(0.15 + 0.85 * rel, 4), notes
+        notes.append(f"not {target.relation.replace('_', ' ')} '{target.anchor}'")
+        return 0.05, notes
     if target.context_hint:
         fields = [c.form_name, c.dialog_name, c.section_heading, c.landmark_name, c.landmark, c.fieldset_legend,
                   c.row_text, *(c.ancestors or [])]
@@ -481,8 +514,7 @@ def _hard_excluded(step: Step, target: TargetSpec, el: InventoryElement, action:
         return "not a toggle"
     if el.tag == "label" and action != "click":
         return "label proxy of a form control"
-    if action == "upload" and not (el.input_type == "file" or (el.role == "button" and el.semantic_purpose == "upload"
-                                                               and el.tag != "label")):
+    if action == "upload" and not (el.input_type == "file" or (el.tag != "label" and _opens_file_chooser(el))):
         return "not a file input"
     if el.role in ("heading", "paragraph", "status", "alert", "row", "cell", "listitem", "form", "iframe", "group",
                    "region", "list", "table", "dialog", "alertdialog") and action in ("click", "fill", "type",
@@ -509,6 +541,8 @@ class ElementGrounder:
             if cell is not None:
                 return self._pinned(cell, observation, 0.96, "range cell under the column header")
         action = action_override or ACTION_FOR_GROUNDING.get(step.action, "click")
+        if target.relation and target.anchor:
+            ctx = dataclasses.replace(ctx, anchors=find_anchors(observation, target.anchor))
         modal_refs = {d.ref for d in observation.dialogs if d.modal and d.ref}
         has_modal = bool(modal_refs)
 
@@ -622,9 +656,17 @@ class ElementGrounder:
                 # memory may confirm a live match, never overrule a clearly better one
                 c.memory_quality, c.memory_id = 0.0, None
                 c.evidence.append("remembered target ignored: a clearly better live match exists")
+        positional = bool(target.relation and ctx.anchors)
         for c in scored:
             f = c.features
-            weights = {"identity": 0.56, "role": 0.12, "context": 0.14, "state": 0.12}
+            if positional:
+                # "the button below Search", "the link next to Upload Documents": where it is decides as much as
+                # what it is called (it often has no name of its own)
+                named = bool(target.exact_name) or (has_name_target and target.intent not in GENERIC_KINDS)
+                weights = {"identity": 0.4 if named else 0.22, "role": 0.12, "context": 0.38 if named else 0.54,
+                           "state": 0.1}
+            else:
+                weights = {"identity": 0.56, "role": 0.12, "context": 0.14, "state": 0.12}
             if "type" in f:
                 weights["type"] = 0.06
             c.raw = sum(f[k] * w for k, w in weights.items()) / sum(weights.values())
@@ -638,8 +680,26 @@ class ElementGrounder:
         ordinal_applied = False
         if target.ordinal is not None or target.position_hint:
             tier = [c for c in scored if c.raw >= top.raw - 0.08]
-            tier.sort(key=lambda c: ((c.element.bbox.y if c.element.bbox else 0) // 8,
-                                     c.element.bbox.x if c.element.bbox else 0))
+            if positional:
+                tier = [c for c in scored if c.features.get("context", 0) > 0.15 and c.raw >= top.raw - 0.25]
+            if target.ordinal is not None and not positional:
+                # a from ~ to pair, or a row of controls sharing one label ("the second Data period dropdown"):
+                # controls of the same kind on the top match's row belong to the same group
+                for c in scored:
+                    unnamed = not (c.element.name or "").strip() or bool(SEPARATOR_NAME_RE.fullmatch(c.element.name.strip()))
+                    if c not in tier and c.element.role == top.element.role and same_row(c.element, top.element) \
+                            and (unnamed or c.features.get("identity", 0) >= top.features.get("identity", 0) - 0.45):
+                        tier.append(c)
+            if target.preferred_roles and any(c.features.get("role", 0) >= 0.95 for c in tier):
+                # "the first Data period dropdown" counts dropdowns, not the text label next to them
+                tier = [c for c in tier if c.features.get("role", 0) >= 0.95]
+            if positional and target.relation in ("below", "above", "right_of", "left_of"):
+                # "the first row under Cycle No": nearest to the anchor first
+                axis = {"below": lambda b: b.y, "above": lambda b: -b.y, "right_of": lambda b: b.x,
+                        "left_of": lambda b: -b.x}[target.relation]
+                tier.sort(key=lambda c: axis(c.element.bbox) if c.element.bbox else 1e9)
+            else:
+                tier.sort(key=lambda c: reading_order_key(c.element))
             if target.position_hint:
                 tier = _apply_position(tier, target.position_hint, observation.viewport)
             if target.ordinal is not None and tier:

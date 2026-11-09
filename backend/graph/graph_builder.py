@@ -52,6 +52,16 @@ def _after_observe(state: TestExecutionState) -> str:
     return "resolve_target_element"
 
 
+def _after_resolve(state: TestExecutionState) -> str:
+    phase = state.get("phase")
+    if phase == "abort":
+        return "final_assertions"
+    if phase == "error":
+        # grounding crashed: whatever decision was left from before the crash must never be executed
+        return "classify_failure"
+    return "ground_target"
+
+
 def _after_ground(state: TestExecutionState) -> str:
     phase = state.get("phase")
     if phase == "abort":
@@ -160,7 +170,7 @@ def build_graph() -> StateGraph:
     g.add_conditional_edges("prepare_next_action", _after_prepare)
     g.add_conditional_edges("retrieve_step_memory", _abort_or("observe_current_page"))
     g.add_conditional_edges("observe_current_page", _after_observe)
-    g.add_conditional_edges("resolve_target_element", _abort_or("ground_target"))
+    g.add_conditional_edges("resolve_target_element", _after_resolve)
     g.add_conditional_edges("ground_target", _after_ground)
     g.add_conditional_edges("validate_action", _after_validate)
     g.add_conditional_edges("human_approval", _after_approval)

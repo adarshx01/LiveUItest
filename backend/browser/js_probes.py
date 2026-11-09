@@ -101,40 +101,68 @@ const labelFor = (el) => {
 };
 // Messy pages rarely associate labels: read the text a human would read as the field's label.
 const ownText = (n) => Array.from(n.childNodes).filter(c => c.nodeType === 3).map(c => c.nodeValue).join(' ');
+// text a person reads as a label: never the option lists of selects inside it ("Horizontal 1 2 3 4 5 10")
+const labelText = (n) => {
+  if (!n) return '';
+  if (n.nodeType === 3) return n.nodeValue;
+  if (n.nodeType !== 1 || /^(SELECT|OPTION|SCRIPT|STYLE|TEXTAREA|INPUT|BUTTON)$/.test(n.tagName)) return '';
+  let out = '';
+  for (const c of n.childNodes) out += ' ' + labelText(c);
+  return out.replace(/\s+/g, ' ').trim();
+};
+// "～", "~", "-", "to" between two controls of a range: a separator, not a label
+const SEPARATOR = /^(?:[~～〜\-–—:|/・,]+|to|thru|through|from|and|or|から|まで|至)$/i;
+const labelish = (t) => { t = shortText(t); return t && !SEPARATOR.test(t) ? t : ''; };
 const inferLabel = (el) => {
-  // 1. text right before the control inside the same container ("Email: <input>", "<span>Email</span><input>")
-  for (let sib = el.previousSibling, hops = 0; sib && hops < 4; sib = sib.previousSibling, hops++) {
-    if (sib.nodeType === 3) { const t = shortText(sib.nodeValue); if (t) return t; continue; }
+  // 1. text right before the control inside the same container ("Email: <input>", "<span>Email</span><input>").
+  //    The second control of a range ("[from] ～ [to]") reads the label of the first one.
+  let crossedSeparator = false;
+  for (let sib = el.previousSibling, hops = 0; sib && hops < 8; sib = sib.previousSibling, hops++) {
+    if (sib.nodeType === 3) {
+      const raw = shortText(sib.nodeValue);
+      if (raw && SEPARATOR.test(raw)) { crossedSeparator = true; continue; }
+      if (raw) return raw;
+      continue;
+    }
     if (sib.nodeType !== 1) continue;
-    if (isControl(sib) || sib.querySelector && sib.querySelector('input,select,textarea,button')) break;
-    const t = shortText(textOf(sib)); if (t) return t;
+    const own = shortText(labelText(sib));
+    if (own && SEPARATOR.test(own) && !isControl(sib)) { crossedSeparator = true; continue; }
+    if (isControl(sib) || sib.querySelector && sib.querySelector('input,select,textarea,button')) {
+      if (crossedSeparator) { crossedSeparator = false; continue; }  // the range's first control: keep looking
+      break;
+    }
+    const t = labelish(labelText(sib)); if (t) return t;
   }
   // 2. table forms: the cell to the left, else the column header
   const cell = el.closest('td,th,[role="gridcell"],[role="cell"]');
   if (cell) {
     for (let prev = cell.previousElementSibling; prev; prev = prev.previousElementSibling) {
-      const t = shortText(textOf(prev)); if (t && !prev.querySelector('input,select,textarea')) return t;
+      const t = labelish(labelText(prev)); if (t && !prev.querySelector('input,textarea')) return t;
     }
     const table = cell.closest('table');
     if (table && cell.parentElement) {
       const col = Array.from(cell.parentElement.children).indexOf(cell);
       const head = table.querySelector('thead tr, tr');
-      if (head && head !== cell.parentElement && head.children[col]) { const t = shortText(textOf(head.children[col])); if (t) return t; }
+      if (head && head !== cell.parentElement && head.children[col]) { const t = labelish(labelText(head.children[col])); if (t) return t; }
     }
   }
   // 3. a wrapper whose own text is the label ("<div>Email <input></div>"), or the wrapper's previous sibling
   let wrapper = el.parentElement;
   for (let depth = 0; wrapper && depth < 3; depth++, wrapper = wrapper.parentElement) {
     const controls = wrapper.querySelectorAll('input,select,textarea');
-    if (controls.length > 1) break;
-    const own = shortText(ownText(wrapper)); if (own) return own;
+    if (controls.length > 1) {
+      // a from ~ to pair sharing one wrapper: the wrapper's label names both
+      const seps = Array.from(wrapper.childNodes).some(c => SEPARATOR.test(shortText(c.nodeType === 3 ? c.nodeValue : labelText(c))));
+      if (!(controls.length === 2 && seps)) break;
+    }
+    const own = labelish(ownText(wrapper)); if (own) return own;
     const prev = wrapper.previousElementSibling;
     if (prev && !isControl(prev) && !(prev.querySelector && prev.querySelector('input,select,textarea,button'))) {
-      const t = shortText(textOf(prev)); if (t) return t;
+      const t = labelish(labelText(prev)); if (t) return t;
     }
   }
   // 4. definition lists
-  const dd = el.closest('dd'); if (dd && dd.previousElementSibling && dd.previousElementSibling.tagName === 'DT') return shortText(textOf(dd.previousElementSibling));
+  const dd = el.closest('dd'); if (dd && dd.previousElementSibling && dd.previousElementSibling.tagName === 'DT') return labelish(labelText(dd.previousElementSibling));
   return '';
 };
 const describedBy = (el) => { const by = el.getAttribute('aria-describedby'); return by ? by.split(/\s+/).map(id => textOf(byId(el, id))).join(' ').trim().slice(0, 120) : ''; };
@@ -555,6 +583,95 @@ def fnv1a(text: str) -> str:
     return format(h, "x")
 
 
+def set_value_probe(value: str) -> Probe:
+    """Put a value into a field the way frameworks expect it: the native value setter (so React / Vue /
+    Angular see the change), then input, change, keyup and blur events (ASP.NET AutoPostBack, masked editors
+    and validators listen for those). Used only after real typing did not stick; never for secrets."""
+
+    literal = json.dumps(value)
+    return Probe("set_input_value", r"""(el) => {
+  const value = """ + literal + r""";
+  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+              : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+  const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+  el.focus();
+  if (el.isContentEditable) { el.textContent = value; }
+  else if (desc && desc.set) { desc.set.call(el, value); }
+  else { el.value = value; }
+  el.dispatchEvent(new Event('input', {bubbles: true}));
+  el.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true, key: 'End'}));
+  el.dispatchEvent(new Event('change', {bubbles: true}));
+  el.blur();
+  el.dispatchEvent(new FocusEvent('focusout', {bubbles: true}));
+  return {value: el.isContentEditable ? el.textContent : el.value, tag: el.tagName.toLowerCase()};
+}""", element=True, mutates_view=True)
+
+
+def find_thing_probe(needle: str) -> Probe:
+    """Something the test waits for ("the preview", "the success message"): visible text containing the words,
+    or a visible element whose accessible name, alt/title/placeholder, id, class or test id contains them."""
+
+    literal = json.dumps(needle)
+    return Probe("find_thing", r"""() => {
+  const needle = """ + literal + r""".toLowerCase().replace(/\s+/g, ' ').trim();
+  const words = needle.split(' ').filter(w => w && !['the','a','an','to','of','is','be'].includes(w));
+""" + _DEEP_JS + r"""
+  const visible = (e) => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e);
+    return r.width > 1 && r.height > 1 && st.visibility !== 'hidden' && st.display !== 'none' && parseFloat(st.opacity || '1') > 0.05; };
+  const attrs = (e) => [e.getAttribute('aria-label'), e.getAttribute('title'), e.getAttribute('alt'),
+    e.getAttribute('placeholder'), e.getAttribute('name'), e.id, typeof e.className === 'string' ? e.className : '',
+    e.getAttribute('data-testid'), e.getAttribute('src') && e.tagName !== 'SCRIPT' ? e.getAttribute('src') : ''
+  ].filter(Boolean).join(' ').toLowerCase().replace(/[-_]/g, ' ');
+  const text = [], named = [];
+  for (const el of deepElements(document.body, 20000)) {
+    if (text.length + named.length >= 20) break;
+    if (!visible(el)) continue;
+    const own = Array.from(el.childNodes).filter(n => n.nodeType === 3).map(n => n.nodeValue).join(' ')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    if (own && own.includes(needle)) { text.push({tag: el.tagName.toLowerCase(), text: own.slice(0, 80)}); continue; }
+    const a = attrs(el);
+    if (words.length && words.every(w => a.includes(w)))
+      named.push({tag: el.tagName.toLowerCase(), attrs: a.slice(0, 100)});
+  }
+  return {text, named, found: text.length + named.length > 0};
+}""")
+
+
+def text_colors_probe(items: list[str]) -> Probe:
+    """Rendered colours of the visible elements whose own text is exactly each item ("1", "Total"...):
+    text colour, effective background (first non-transparent ancestor) and border colour."""
+
+    literal = json.dumps([str(i) for i in items][:30])
+    return Probe("text_colors", r"""() => {
+  const items = """ + literal + r""";
+""" + _DEEP_JS + r"""
+  const visible = (e) => { const r = e.getBoundingClientRect(); const st = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none'; };
+  const transparent = (c) => !c || c === 'transparent' || /rgba\([^)]*,\s*0\)$/.test(c);
+  const bgOf = (e) => { for (let n = e, i = 0; n && n.nodeType === 1 && i < 8; n = n.parentElement, i++) {
+      const c = getComputedStyle(n).backgroundColor; if (!transparent(c)) return c; } return null; };
+  const ownText = (e) => {
+    if (/^(INPUT|TEXTAREA)$/.test(e.tagName)) return (e.value || '').trim();
+    if (e.tagName === 'SELECT') return e.selectedOptions[0] ? e.selectedOptions[0].text.trim() : '';
+    return Array.from(e.childNodes).filter(n => n.nodeType === 3).map(n => n.nodeValue).join(' ').replace(/\s+/g, ' ').trim();
+  };
+  const out = {};
+  const all = deepElements(document.body, 25000);
+  for (const item of items) {
+    const hits = [];
+    for (const el of all) {
+      if (hits.length >= 12) break;
+      if (ownText(el) !== item || !visible(el)) continue;
+      const st = getComputedStyle(el); const r = el.getBoundingClientRect();
+      hits.push({tag: el.tagName.toLowerCase(), color: st.color, background: bgOf(el), border: st.borderTopColor,
+                 box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]});
+    }
+    out[item] = hits;
+  }
+  return out;
+}""")
+
+
 def find_text_probe(needle: str, exact: bool = False) -> Probe:
     """Locate visible elements whose own text contains ``needle`` (with boxes)."""
 
@@ -615,4 +732,5 @@ STATIC_PROBES: dict[str, Probe] = {p.name: p for p in (DOM_INVENTORY, PAGE_SIGNA
                                                         ELEMENT_STATE, VALUE_FINGERPRINT, SCROLL_INFO,
                                                         MASK_SENSITIVE_FIELD, SELECT_STATE, INPUT_STATE,
                                                         POPUP_OPTIONS, SCROLL_LIST, CALENDAR_STATE, TIME_FIELDS)}
-PROBE_NAMES = set(STATIC_PROBES) | {"find_text", "element_at_point", "scroll_by", "scroll_edge", "scroll_into_view"}
+PROBE_NAMES = set(STATIC_PROBES) | {"find_text", "element_at_point", "scroll_by", "scroll_edge", "scroll_into_view",
+                                    "set_input_value", "find_thing", "text_colors"}

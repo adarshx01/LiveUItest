@@ -203,3 +203,33 @@ def _result(original: str, normalized: str | None, what: str) -> Normalized:
     if normalized == original:
         return Normalized(normalized, False)
     return Normalized(normalized, True, f"{what} normalized to '{normalized}'")
+
+
+_MASK_CHARS = re.compile(r"[\s_\-/().:,]")
+
+
+def equivalent_values(typed: str, shown: str | None) -> str | None:
+    """Why the value a field shows means the value that was typed, or None when it does not.
+
+    Applications normalise input: "09.999" is kept as "9.999", "1,000" as "1000", an input mask shows
+    "701" as "701_" or "(070) 1". Those are the same value; anything else is a mismatch.
+    """
+
+    if shown is None:
+        return None
+    a, b = typed.strip(), shown.strip()
+    if a == b:
+        return "exact"
+    if a.lower() == b.lower():
+        return "same text, different letter case"
+    if " ".join(a.split()) == " ".join(b.split()):
+        return "same text, different spacing"
+    na, nb = _number(a.replace(",", "")), _number(b.replace(",", ""))
+    # "01" -> "1" is not formatting: codes and labels keep their leading zeros on purpose
+    zero_padded = re.fullmatch(r"[+-]?0\d+", a) is not None
+    if na is not None and nb is not None and abs(na - nb) < 1e-9 and not zero_padded:
+        return f"same number ({b!r} for {a!r})"
+    ma, mb = _MASK_CHARS.sub("", a), _MASK_CHARS.sub("", b)
+    if ma and ma == mb:
+        return f"same characters inside the field's format ({b!r})"
+    return None

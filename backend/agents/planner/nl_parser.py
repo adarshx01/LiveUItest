@@ -158,7 +158,7 @@ class StepParser:
     def _parse_line(self, line: str, raw_line: str, ctx: ParseContext) -> ParsedLine:
         # phrasings that contain "and" but describe ONE interaction run before compound splitting
         for rule in (self._rule_click_and_select, self._rule_time_fields, self._rule_check_on_tab,
-                     self._rule_range_cell, self._rule_verify_else):
+                     self._rule_range_cell, self._rule_verify_else, self._rule_click_fill, self._rule_close_popup):
             result = rule(line, ctx)
             if result is not None:
                 return result
@@ -207,10 +207,10 @@ class StepParser:
                      line, re.IGNORECASE)
         if not m:
             return None
-        option = strip_quotes(m.group("opt"))
+        option = clean_option(m.group("opt"))
         said = strip_quotes(m.group("target")).strip()
-        label = re.sub(r"\s+(?:box|field|selection|selector|picker|dropdown|drop-down|drop down|list)$", "", said,
-                       flags=re.IGNORECASE).strip() or said
+        label = strip_quotes(re.sub(r"\s+(?:box|field|selection|selector|picker|dropdown|drop-down|drop down|list)$", "",
+                                    said, flags=re.IGNORECASE).strip()) or said
         target = build_target(label, "select")
         # the control is labelled "Theme", not "Theme Box": the label leads, the full wording stays a hint
         target.intent = label
@@ -218,7 +218,8 @@ class StepParser:
         # a "box"/"selection" that one opens and picks from is a list or a picker, whatever its markup
         target.preferred_roles = ["combobox", "listbox", "button", "textbox", "generic"]
         target.option_text = option
-        step = self._step(ctx, line, ActionType.SELECT, 0.93, target=target, value=parse_value(m.group("opt"), ctx),
+        step = self._step(ctx, line, ActionType.SELECT, 0.93, target=target,
+                          value=parse_value(clean_option(m.group("opt"), keep_quotes=True), ctx),
                           risk_hint="input", expected_postcondition="selected option matches",
                           notes=["open_then_choose"])
         ctx.chosen_options.append(option)
@@ -303,7 +304,7 @@ class StepParser:
         if not m:
             return None
         name, kind = strip_quotes(m.group("name")).strip(), m.group("kind").strip()
-        target = TargetSpec(intent=name, exact_name=name, semantic_hints=[name, f"{kind} {name}"],
+        target = TargetSpec(intent=name, exact_name=name, literal=True, semantic_hints=[name, f"{kind} {name}"],
                             preferred_roles=["link", "button", "row", "cell", "listitem", "option", "generic"],
                             context_hint=None)
         step = self._step(ctx, line, ActionType.CLICK, 0.92, target=target, risk_hint="navigation",
@@ -334,6 +335,70 @@ class StepParser:
                           * condition[1], condition=condition[0], then_steps=then_parsed.steps,
                           else_steps=else_parsed.steps)
         return ParsedLine([step], step.confidence, "inline conditional")
+
+    def _observe(self, line: str, cond: str, ctx: ParseContext) -> ParsedLine | None:
+        """ "Observe the Vertical Range (%) inputs; start entering from left to right" names something to look
+        at, then talks to the tester. The first clause becomes a visibility check; a later clause is kept only
+        when it is itself a checkable claim ("the values below 01 and 02 are already 0.000 and 100.000")."""
+
+        clauses = [c.strip() for c in re.split(r"\s*;\s*", cond) if c.strip()]
+        first = clauses[0]
+        if not STATE_VERBS_RE.search(first) and not re.search(r"\b(is|are)\b", first, re.IGNORECASE):
+            first = f"{first} is displayed"
+        parsed = self._assertion_steps(line, first, ctx)
+        if parsed is None:
+            return None
+        steps = list(parsed.steps)
+        for clause in clauses[1:]:
+            spec, confidence = parse_assertion(clause, ctx)
+            if spec is not None and confidence >= 0.85 and not (spec.match == "semantic" and confidence < 0.9):
+                steps.append(self._step(ctx, line, ActionType.ASSERT, confidence, assertion=spec, risk_hint="read",
+                                        notes=[f"clause: {clause[:120]}"]))
+            elif steps:
+                steps[0].notes.append(f"tester guidance (not checked): {clause[:120]}")
+        return ParsedLine(steps, min(st.confidence for st in steps), "observe")
+
+    def _rule_click_fill(self, line: str, ctx: ParseContext) -> ParsedLine | None:
+        """ "click on the field "Quintile Title", clear the existing text, and enter "X"" is ONE fill: fill
+        replaces the content, so the click and the clearing are implied (split apart, the "clear" became a
+        click on a random block of text)."""
+
+        quoted = r"(?:\"[^\"]*\"|'[^']*'|\{\{\s*\w+\s*\}\})"
+        m = re.match(rf"^(?:click|tap|go)\s+(?:on\s+|in(?:to)?\s+|to\s+)?(?:the\s+)?(?:(?:text\s+)?(?:field|input(?:\s+field)?|"
+                     rf"textbox|text\s+box|box|text\s+area|textarea|cell)\s+)?(?P<target>{quoted}|[^,\"]+?)"
+                     rf"(?:\s+(?:field|input|textbox|box))?(?:\s*,\s*|\s+and\s+|\s+then\s+)"
+                     rf"(?:(?:clear|remove|delete|erase)\s+(?:the\s+|its\s+|all\s+)?"
+                     rf"(?:existing\s+|current\s+|old\s+|previous\s+|default\s+)?(?:text|value|content|data|entry)?"
+                     rf"(?:\s*,\s*|\s+and\s+|\s+then\s+)+)?(?:and\s+)?(?:then\s+)?"
+                     rf"(?:enter|type|input|write|key\s+in|fill(?:\s+in)?)\s+(?P<val>{quoted}|.+?)\s*$",
+                     line, re.IGNORECASE)
+        if not m or re.search(r"\b(below|under|above|next\s+to)\b", line, re.IGNORECASE) and \
+                re.search(r"\b(range|column|row)\b", line, re.IGNORECASE):
+            return None  # Range (%) grid cells are positional: _rule_range_cell
+        target_text = m.group("target").strip()
+        if not QUOTE_RE.fullmatch(target_text) and not looks_like_field(target_text + " field"):
+            return None
+        target = build_target(f"{target_text} field" if not QUOTE_RE.fullmatch(target_text) else target_text, "fill")
+        target.preferred_roles = target.preferred_roles or ["textbox", "searchbox", "spinbutton", "combobox"]
+        value = parse_value(m.group("val"), ctx, purpose=target.purpose)
+        step = self._step(ctx, line, ActionType.FILL, 0.93, target=target, value=value, risk_hint="input",
+                          notes=["replace_content"])
+        return ParsedLine([step], 0.93, "click, clear and enter")
+
+    def _rule_close_popup(self, line: str, ctx: ParseContext) -> ParsedLine | None:
+        """ "Click on the right sidebar to close the Cycle Number dropdown": the goal is to close the popup; the
+        place to click is incidental. Escape closes it; a click on an empty spot when Escape does not."""
+
+        m = re.match(r"^(?:click|tap|press)\s+(?:on\s+|in\s+)?(?:the\s+|an?\s+)?(?P<where>.+?)\s+(?:in\s+order\s+)?to\s+"
+                     r"(?:close|dismiss|collapse|hide)\s+(?:the\s+)?(?P<what>.+?)$", line, re.IGNORECASE)
+        if not m:
+            return None
+        if not re.search(r"\b(dropdown|drop-down|list|popup|pop-up|menu|calendar|picker|suggestions?|overlay|tooltip)\b",
+                         m.group("what"), re.IGNORECASE):
+            return None
+        step = self._step(ctx, line, ActionType.PRESS_KEY, 0.9, key="Escape", risk_hint="read",
+                          notes=["close_popup", f"click_area:{m.group('where').strip()[:60]}"])
+        return ParsedLine([step], 0.9, "close popup")
 
     def _rule_range_cell(self, line: str, ctx: ParseContext) -> ParsedLine | None:
         """A Range (%) grid is two rows. The letter or number is the column header; the value goes in the box under it.
@@ -396,13 +461,15 @@ class StepParser:
         checked = self._rule_assert(m.group("check").strip(), ctx)
         if checked is None or not checked.steps or checked.steps[0].assertion is None:
             return None
-        expected = checked.steps[0].assertion.expected
-        if expected is None:
-            return None
+        assertion = checked.steps[0].assertion
         fallback = self.parse(m.group("fallback").strip(), ctx)
         if not fallback.steps:
             return None
-        cond = ConditionSpec(kind="text_visible", expected=str(expected), description=m.group("check").strip())
+        # the check is evaluated as the assertion it is (a selected option, a count, a checked box), not as
+        # a search for its wording; a short timeout: the else branch exists to repair it
+        cond = ConditionSpec(kind="assertion", assertion=assertion.model_copy(update={"timeout_ms": 3000}),
+                             expected=None if assertion.expected is None else str(assertion.expected),
+                             description=m.group("check").strip())
         step = self._step(ctx, line, ActionType.CONDITIONAL, 0.86, condition=cond, then_steps=[],
                           else_steps=fallback.steps)
         return ParsedLine([step], 0.86, "verify else recover")
@@ -446,6 +513,8 @@ class StepParser:
             if verb == "confirm" and re.match(r"^confirm\s+(?:the\s+)?(?:alert|dialog|popup|prompt|order|"
                                               r"purchase|payment|booking)\b", line, re.IGNORECASE):
                 return None
+            if verb == "observe":
+                return self._observe(line, cond, ctx)
             return self._assertion_steps(line, cond, ctx)
         m = re.match(r"^(?:the\s+)?(?P<subject>.+?)\s+(?:should|must|will)\s+(?:now\s+)?(?P<pred>.+)$", line,
                      re.IGNORECASE)
@@ -600,10 +669,25 @@ class StepParser:
                 seconds = n * 60
             return ParsedLine([self._step(ctx, line, ActionType.WAIT, 0.98, wait=WaitSpec(seconds=seconds),
                                           risk_hint="read")], 0.98, "wait time")
-        if re.match(r"^wait\s+(?:for|until)\s+(?:the\s+)?page\s+(?:to\s+)?(?:fully\s+)?loads?(?:ed)?$", line,
-                    re.IGNORECASE):
-            return ParsedLine([self._step(ctx, line, ActionType.WAIT, 0.95, wait=WaitSpec(seconds=1.0),
-                                          risk_hint="read", notes=["page_load"])], 0.95, "wait load")
+        # "wait for sometime", "wait a moment", "wait for a few seconds": a pause, not text to look for
+        m = re.match(r"^wait\s+(?:for\s+)?(?:a\s+|some\s+)?(?P<what>some\s*time|sometime|while|moment|bit|little(?:\s+while)?|"
+                     r"second|few\s+(?:more\s+)?seconds?|couple\s+of\s+seconds|some\s+seconds|few\s+moments?)"
+                     r"(?:\s+(?:more|longer))?$", line, re.IGNORECASE)
+        if m:
+            what = m.group("what").lower()
+            seconds = 5.0 if "while" in what else 1.0 if what == "second" else 3.0
+            return ParsedLine([self._step(ctx, line, ActionType.WAIT, 0.97, wait=WaitSpec(seconds=seconds),
+                                          risk_hint="read", notes=["pause"])], 0.97, "pause")
+        # "wait until (the) results are loaded properly", "wait for the page to load", "wait till the grid refreshes"
+        m = re.match(r"^wait\s+(?:for|until|till|untill)\s+(?:all\s+)?(?:the\s+)?(?P<what>page|screen|results?|data|content|"
+                     r"grid|table|list|report|records?|rows?|search\s+results?|details?|form|everything|it|values?|"
+                     r"options?|dropdowns?|chart|graph)\s+(?:to\s+)?(?:is\s+|are\s+|has\s+|have\s+|gets?\s+|be\s+)?"
+                     r"(?:been\s+)?(?:fully\s+|properly\s+|completely\s+|correctly\s+)?(?:loads?|loaded|loading|displayed|ready|"
+                     r"shown|rendered|refreshe?[sd]?|updated?|populated|finished|done|complete[sd]?|settles?|settled)"
+                     r"(?:\s+(?:properly|completely|fully|correctly))?$", line, re.IGNORECASE)
+        if m:
+            return ParsedLine([self._step(ctx, line, ActionType.WAIT, 0.95, wait=WaitSpec(until_stable=True),
+                                          risk_hint="read", notes=["page_load"])], 0.95, "wait until settled")
         m = re.match(r"^wait\s+(?:for|until)\s+(?:the\s+)?(?P<what>.+?)\s+(?:to\s+)?(?P<state>appear|appears|be\s+visible|"
                      r"is\s+visible|be\s+displayed|is\s+displayed|load|loads|be\s+loaded|show\s+up|shows\s+up|"
                      r"disappear|disappears|vanish|vanishes|be\s+hidden|is\s+hidden|is\s+gone|go\s+away|goes\s+away)$",
@@ -868,15 +952,18 @@ class StepParser:
 
     def _rule_select(self, line: str, ctx: ParseContext) -> ParsedLine | None:
         # "Select India from the country dropdown"
-        m = re.match(r"^(?:select|choose|pick)\s+(?:the\s+)?(?:option\s+)?(?P<opt>\"[^\"]+\"|'[^']+'|.+?)\s+"
+        m = re.match(r"^(?:select|choose|pick)\s+(?:the\s+)?(?:option\s+)?(?P<opt>\"[^\"]+\"|'[^']+'|.+?)"
+                     r"(?:\s+(?:option|value|item|entry|choice))?\s+"
                      r"(?:from|in|on|under|within|for)\s+(?:the\s+)?(?P<target>.+)$", line, re.IGNORECASE)
         if m and not re.search(r"\b(page|tab|window|menu bar)\b", m.group("target"), re.IGNORECASE):
-            option = strip_quotes(m.group("opt"))
+            choices = quoted_choices(m.group("opt"))
+            option = ", ".join(choices) if len(choices) > 1 else clean_option(m.group("opt"))
             target = build_target(m.group("target"), "select")
             if not target.preferred_roles:
                 target.preferred_roles = ["combobox", "listbox", "radiogroup"]
             target.option_text = option
-            value = parse_value(m.group("opt"), ctx)
+            value = ValueSpec(source="literal", value=option, values=choices) if len(choices) > 1 else \
+                parse_value(clean_option(m.group("opt"), keep_quotes=True), ctx)
             ctx.chosen_options.append(option)
             step = self._step(ctx, line, ActionType.SELECT, 0.95, target=target, value=value, risk_hint="input",
                               expected_postcondition="selected option matches")
@@ -1055,6 +1142,65 @@ def strip_quotes(text: str | None) -> str:
     return text
 
 
+COLOR_NAME_RE = (r"(?:light\s+|dark\s+|pale\s+|bright\s+|sky\s+|navy\s+|royal\s+|lime\s+|forest\s+|olive\s+|"
+                 r"hot\s+|deep\s+)?(?:red|green|blue|yellow|orange|purple|violet|pink|grey|gray|black|white|brown|cyan|"
+                 r"magenta|teal|maroon|navy|olive|lime|gold|silver|beige|turquoise|indigo|crimson|amber)")
+
+
+def grid_target(column: str, hint: str, row: int | None = None) -> TargetSpec:
+    """The input cell of a header-and-values grid (Range (%)): resolved by geometry, not by its name."""
+
+    return TargetSpec(intent=f"range input {column}", exact_name=column, preferred_roles=["textbox", "spinbutton"],
+                      element_kind="input field", ordinal=row, position_hint=hint, semantic_hints=[column, "range"])
+
+
+def column_range(first: str, last: str) -> list[str]:
+    """'A'..'K' -> A, B, ... K; '1'..'11' -> 1 ... 11 (a run of column headers)."""
+
+    if first.isdigit() and last.isdigit():
+        lo, hi = int(first), int(last)
+        return [str(n) for n in range(lo, hi + 1)] if 0 < hi - lo < 60 else []
+    if len(first) == 1 and len(last) == 1 and first.isalpha() and last.isalpha():
+        lo, hi = ord(first.upper()), ord(last.upper())
+        return [chr(c) for c in range(lo, hi + 1)] if 0 < hi - lo < 26 else []
+    return []
+
+
+def clean_option(text: str, *, keep_quotes: bool = False) -> str:
+    """'"10" option' -> '10'; "the option Yes" -> "Yes": the option's label without the words around it."""
+
+    raw = re.sub(r"^(?:the\s+)?(?:option\s+)?", "", (text or "").strip(), flags=re.IGNORECASE)
+    raw = re.sub(r"\s+(?:option|value|item|entry|choice)$", "", raw, flags=re.IGNORECASE).strip()
+    return raw if keep_quotes else strip_quotes(raw)
+
+
+def quoted_choices(text: str) -> list[str]:
+    """'"202404" and "202409"' -> ['202404', '202409'] (two or more separately quoted choices)."""
+
+    items = [next(g for g in m.groups() if g is not None) for m in QUOTE_RE.finditer(text or "")]
+    rest = QUOTE_RE.sub("", text or "")
+    if len(items) >= 2 and re.fullmatch(r"[\s,;/&]*(?:(?:and|or|to|&|,)\s*)*[\s,;/&]*", rest, re.IGNORECASE):
+        return items
+    return []
+
+
+def outer_quoted(text: str) -> str | None:
+    """'the checkbox "Put a "top" on the axis range"' -> 'Put a "top" on the axis range' (nested quotes).
+
+    Only when the quotes are nested inside one name: separate quoted items ('"A" and "B"') are not merged."""
+
+    m = re.search(r'"(.+)"', text or "")
+    if m is None or m.group(1).count('"') != 2:
+        return None
+    inner = m.group(1)
+    before, middle, after = inner.split('"')
+    # nested: 'Put a "top" on the axis' - the inner word sits flush against its quotes inside spaced text.
+    # separate items: '"Add more" link next to "Upload Documents"' - spaced connector text between two quotes.
+    nested = (bool(middle) and middle == middle.strip() and (before == "" or before.endswith(" "))
+              and (after == "" or after.startswith(" ")) and bool(before.strip() or after.strip()))
+    return inner if nested else None
+
+
 def is_explicit_value(text: str | None) -> bool:
     if not text:
         return False
@@ -1149,8 +1295,13 @@ def build_target(phrase: str | None, action: str) -> TargetSpec:
 
     raw = (phrase or "").strip().rstrip(".,;")
     exact_name: str | None = None
+    nested = outer_quoted(raw)
+    if nested is not None:
+        # 'Put a "top" on the horizontal axis range' is one name with quotes inside it
+        exact_name = nested
+        raw = raw.replace(f'"{nested}"', ' "__NESTED__" ')
     quoted = [next(g for g in m.groups() if g is not None) for m in QUOTE_RE.finditer(raw)]
-    if quoted:
+    if quoted and exact_name is None:
         exact_name = quoted[0]
     work = QUOTE_RE.sub(lambda m: " __Q__ ", raw) if quoted else raw
 
@@ -1159,12 +1310,30 @@ def build_target(phrase: str | None, action: str) -> TargetSpec:
                       r"dialog|modal|popup|pop-up|panel|header|footer|menu|navigation|nav|navbar|sidebar|card|row|"
                       r"table|frame|iframe|list|column|toolbar|banner|page|area|region|drawer|tab|canvas|map|chart|board|editor|"
                       r"diagram|graph|grid|carousel))$", work, re.IGNORECASE)
+    relation: str | None = None
+    anchor: str | None = None
     if ctx_m:
         context_hint = DETERMINERS_RE.sub("", ctx_m.group("ctx").strip())
         work = work[: ctx_m.start()]
-    else:
-        ctx_m = re.search(r"\s+(?:for|next\s+to|beside|near|below|above|under)\s+(?:the\s+)?(?P<ctx>.+)$", work,
-                          re.IGNORECASE)
+    from backend.agents.grounding.spatial import split_relation
+
+    split = split_relation(work)
+    if split is not None and not ctx_m:
+        head, relation, anchor_text = split
+        if "__Q__" in anchor_text:
+            index = head.count("__Q__")
+            anchor_text = anchor_text.replace("__Q__", quoted[index] if index < len(quoted) else "", 1)
+        anchor = strip_quotes(re.sub(r"\s+", " ", anchor_text).strip()) or None
+        if anchor:
+            work = head
+            if "__Q__" not in head and nested is None:
+                exact_name = None  # 'the input field below "01"': the quote names the anchor, not the target
+            elif "__Q__" in head:
+                exact_name = quoted[0]
+        else:
+            relation = None
+    if relation is None:
+        ctx_m = re.search(r"\s+(?:for)\s+(?:the\s+)?(?P<ctx>.+)$", work, re.IGNORECASE)
         if ctx_m and action in ("click", "check", "uncheck", "hover", "toggle"):
             context_hint = strip_quotes(ctx_m.group("ctx").strip())
             work = work[: ctx_m.start()]
@@ -1273,6 +1442,8 @@ def build_target(phrase: str | None, action: str) -> TargetSpec:
         ordinal=ordinal,
         position_hint=position_hint,
         visual_hint=visual_hint,
+        relation=relation,
+        anchor=anchor,
     )
 
 
@@ -1291,6 +1462,70 @@ def parse_assertion(cond: str, ctx: ParseContext) -> tuple[AssertionSpec | None,
 
     def a(type_: AssertionType, confidence: float, **kw: Any) -> tuple[AssertionSpec, float]:
         return AssertionSpec(type=type_, description=text, **kw), confidence
+
+    # Range (%) grids: the value / state of the input cell under a column header (resolved spatially)
+    q = r"(?:\"[^\"]+\"|'[^']+')"
+    m = re.match(rf"^(?:the\s+)?values?\s+(?:below|under)\s+(?:columns?\s+)?(?P<cols>{q}(?:\s*(?:,|and)\s*{q})*)\s+(?:is|are)\s+"
+                 rf"(?:already\s+|still\s+|now\s+)?(?P<vals>{q}(?:\s*(?:,|and)\s*{q})*)$", text, re.IGNORECASE)
+    if m:
+        cols = [strip_quotes(x.group(0)) for x in QUOTE_RE.finditer(m.group("cols"))]
+        vals = [strip_quotes(x.group(0)) for x in QUOTE_RE.finditer(m.group("vals"))]
+        if len(cols) == len(vals):
+            return a(AssertionType.ALL_OF, 0.9, expected=dict(zip(cols, vals, strict=True)), children=[
+                AssertionSpec(type=AssertionType.INPUT_VALUE_EQUALS, description=f"value below {c} is {v}", expected=v,
+                              target=grid_target(c, "below_label")) for c, v in zip(cols, vals, strict=True)])
+    m = re.match(rf"^(?:the\s+)?(?:value\s+)?(?P<v>{q})\s+is\s+(?:displayed|shown|entered|present)\s+in\s+(?:the\s+)?.*?"
+                 rf"(?:input|field|box|cell)\s+(?:under|below)\s+column\s+(?P<c>{q})$", text, re.IGNORECASE)
+    if m:
+        return a(AssertionType.INPUT_VALUE_EQUALS, 0.9, expected=strip_quotes(m.group("v")),
+                 target=grid_target(strip_quotes(m.group("c")), "below_label"))
+    m = re.match(rf"^(?:the\s+)?.*?(?:input|field|box|cell)\s+(?:under|below)\s+column\s+(?P<c>{q})\s+is\s+"
+                 r"(?P<state>disabled|enabled|editable|read-?only|not\s+editable)(?:\s+and\s+(?:can|cannot|can't|can\s+not)"
+                 r"\s+be\s+edited)?$", text, re.IGNORECASE)
+    if m:
+        state = m.group("state").lower()
+        t = AssertionType.ELEMENT_ENABLED if state in ("enabled", "editable") else AssertionType.ELEMENT_DISABLED
+        return a(t, 0.9, target=grid_target(strip_quotes(m.group("c")), "below_label"))
+    m = re.match(r"^(?:each|every|all(?:\s+the)?)\s+(?:range\s+|input\s+|value\s+)?(?:fields?|inputs?|boxes|box|cells?)\s+"
+                 r"(?:corresponding\s+to|for|under|below|of)\s+(?:columns?\s+)?(?P<a>[A-Za-z]|\d{1,2})\s+(?:through|to|-|~|until)\s+"
+                 r"(?P<b>[A-Za-z]|\d{1,2})\s+(?:is|are)\s+(?P<state>enabled(?:\s+and\s+editable)?|editable|disabled|read-?only)$",
+                 text, re.IGNORECASE)
+    if m:
+        cols = column_range(m.group("a"), m.group("b"))
+        state = m.group("state").lower()
+        t = AssertionType.ELEMENT_DISABLED if state in ("disabled", "readonly", "read-only") else AssertionType.ELEMENT_ENABLED
+        if cols:
+            return a(AssertionType.ALL_OF, 0.88, expected=f"{cols[0]}..{cols[-1]} {state}", children=[
+                AssertionSpec(type=t, description=f"field under {c} is {state}", target=grid_target(c, "below_label"))
+                for c in cols])
+
+    # "1,2,3 are in the sky blue color" / "the Total cell is highlighted in red": a colour on screen
+    m = re.match(r"^(?:the\s+)?(?:values?\s+|cells?\s+|boxes\s+|numbers?\s+)?(?P<items>.+?)\s+(?:is|are)\s+(?:shown\s+|displayed\s+|"
+                 r"highlighted\s+|marked\s+|coloured\s+|colored\s+|painted\s+)?(?:in\s+)?(?:the\s+|a\s+)?(?P<color>"
+                 + COLOR_NAME_RE + r")\s*(?:colou?r(?:ed)?|background|text|font)?$", low)
+    if m:
+        items = [i for i in (strip_quotes(x) for x in re.split(r"\s*(?:,|\band\b|&)\s*", text[m.start("items"):m.end("items")]))
+                 if i]
+        return a(AssertionType.VISUAL_STATE, 0.9, expected={"items": items, "color": m.group("color").strip()})
+    # "Data Perid is 202404 to 202409", "the Data period field shows 202404 ~ 202409": a from-to range in a field
+    m = re.match(r"^(?:the\s+)?(?P<field>\"[^\"]+\"|'[^']+'|.+?)\s+(?:field\s+|dropdowns?\s+)?(?:is|shows|displays|"
+                 r"is set to|has)\s+(?:the\s+range\s+|from\s+)?(?P<a>\"[^\"]+\"|'[^']+'|\S+)\s+(?:to|~|～|-|through|until)\s+"
+                 r"(?P<b>\"[^\"]+\"|'[^']+'|\S+)$", text, re.IGNORECASE)
+    if m and not re.search(r"\b(page|url|title)\b", m.group("field"), re.IGNORECASE):
+        field = strip_quotes(m.group("field"))
+        first, second = strip_quotes(m.group("a")), strip_quotes(m.group("b"))
+        children = [AssertionSpec(type=AssertionType.TEXT_VISIBLE, description=f"{field} shows {v}", expected=v,
+                                  target=build_target(f"{field} field", "select"), match="case_insensitive")
+                    for v in (first, second)]
+        return a(AssertionType.ALL_OF, 0.88, expected=f"{first} to {second}", children=children)
+    # "the total number of range columns displayed is 11", "there are 5 rows in the results table"
+    m = re.match(r"^(?:the\s+)?(?:total\s+)?(?:number|count|no\.?)\s+of\s+(?P<what>.+?)\s+(?:displayed\s+|shown\s+|visible\s+|"
+                 r"present\s+|on\s+the\s+page\s+)?(?:is|are|equals|=)\s+(?P<n>\d+)$|^there\s+(?:is|are)\s+(?:exactly\s+)?"
+                 r"(?P<n2>\d+)\s+(?P<what2>.+?)(?:\s+(?:displayed|shown|visible|present))?$", low)
+    if m:
+        what = (m.group("what") or m.group("what2") or "").strip()
+        count = int(m.group("n") or m.group("n2"))
+        return a(AssertionType.ELEMENT_COUNT, 0.86, expected=count, target=build_target(what, "hover"))
 
     # "Verify that the page is displayed" names no destination. It must not become
     # "URL contains 'the'" / "heading 'the' visible".
@@ -1373,8 +1608,17 @@ def parse_assertion(cond: str, ctx: ParseContext) -> tuple[AssertionSpec | None,
         what = m.group("what")
         return a(AssertionType.ELEMENT_COUNT, 0.85, expected=int(m.group("n")),
                  target=TargetSpec(intent=what, preferred_roles=["row", "listitem", "article", "option"]))
+    # "the DCF/DSF 7 digits checkbox is enabled" means it can be used (no longer disabled), not that it is ticked
+    m = re.match(r"^(?:the\s+)?(?P<target>.+?)\s+(?:checkbox|check box|toggle|switch|radio(?:\s+button)?)\s+"
+                 r"(?:is|should be)\s+(?P<state>enabled|disabled|editable|greyed out|grayed out)$", low)
+    if m:
+        target = build_target(text[: m.end("target")] + " " + low[m.end("target"):m.start("state")].split(" is")[0], "check")
+        target.preferred_roles = ["checkbox", "switch", "radio"]
+        state = m.group("state")
+        t = AssertionType.ELEMENT_DISABLED if state in ("disabled", "greyed out", "grayed out") else AssertionType.ELEMENT_ENABLED
+        return a(t, 0.9, target=target)
     m = re.match(r"^(?:the\s+)?(?P<target>.+?)\s+(?:checkbox|check box|toggle|switch)?\s*(?:is|should be)\s+"
-                 r"(?P<neg>not\s+|un)?(?:checked|ticked|selected|enabled|on)$", low)
+                 r"(?P<neg>not\s+|un)?(?:checked|ticked|selected|on)$", low)
     if m and re.search(r"(checkbox|check box|toggle|switch|radio|remember|agree|terms|subscribe|newsletter|option)", low):
         negate = bool(m.group("neg"))
         target = build_target(text[: m.end("target")], "check")
@@ -1511,6 +1755,11 @@ def text_or_element_assertion(subject: str, *, negate: bool, description: str,
                          match=match), 0.88 if match != "semantic" else 0.8
 
 
+STATE_CONDITIONS = {AssertionType.CHECKBOX_CHECKED, AssertionType.CHECKBOX_UNCHECKED, AssertionType.RADIO_SELECTED,
+                    AssertionType.DROPDOWN_SELECTED, AssertionType.INPUT_VALUE_EQUALS, AssertionType.ELEMENT_ENABLED,
+                    AssertionType.ELEMENT_DISABLED, AssertionType.ELEMENT_COUNT, AssertionType.PAGE_LOADED}
+
+
 def parse_condition(text: str, ctx: ParseContext) -> tuple[ConditionSpec, float]:
     raw = text.strip().rstrip(",")
     m = re.match(r"^(?:the\s+)?(?P<var>[\w\s]+?)\s+(?:is|equals|==|=)\s+(?P<val>\"[^\"]+\"|'[^']+'|[\w\s-]+)$", raw,
@@ -1522,6 +1771,15 @@ def parse_condition(text: str, ctx: ParseContext) -> tuple[ConditionSpec, float]
             if name in ctx.variables:
                 return ConditionSpec(kind="variable_equals", variable=name, expected=strip_quotes(m.group("val")),
                                      description=raw), 1.0
+    # "the checkbox HP is checked", "Country shows India": the state of a control on the page, checked by the
+    # assertion engine. (Before this, such conditions were read as a test variable "checkbox_hp" == "checked".)
+    spec, confidence = parse_assertion(raw, ctx)
+    if spec is not None and spec.type in STATE_CONDITIONS and confidence >= 0.85:
+        return ConditionSpec(kind="assertion", assertion=spec.model_copy(update={"timeout_ms": 3000}),
+                             expected=None if spec.expected is None else str(spec.expected), description=raw), \
+            confidence
+    if m:
+        var_name = re.sub(r"\s+", "_", m.group("var").strip().lower())
         if not re.search(r"\b(visible|displayed|shown|present|appears)\b", raw, re.IGNORECASE):
             return ConditionSpec(kind="variable_equals", variable=var_name, expected=strip_quotes(m.group("val")),
                                  description=raw), 0.85

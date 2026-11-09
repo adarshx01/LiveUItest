@@ -73,6 +73,11 @@ class DropdownDriver:
         from backend.execution.action_executor import ActionOutcome
 
         state = await self.native_state(target, description)
+        if state is None and css and css != target:
+            # the ref went stale (postback / re-render); an id-based selector survives it
+            state = await self.native_state(css, description)
+            if state is not None:
+                target = css
         if state is None:
             return None
         log.info("choosing dropdown option", control=description[:120], option=wanted[:80], kind="native")
@@ -131,6 +136,7 @@ class DropdownDriver:
         out = ActionOutcome.from_response(response, args={"target": target, "values": values},
                                           expected={"selected_option": ", ".join(labels), "selected_list": labels,
                                                     "kind": "native", "owner_target": target, "owner_css": css,
+                                                    "owner_description": description,
                                                     "multiple": bool(state.get("multiple"))},
                                           notes=notes)
         if len(labels) > 1:
